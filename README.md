@@ -33,3 +33,14 @@ DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DB_NAME
 ```
 
 The API health endpoint reports whether the database is configured and reachable.
+
+## Mapbox
+
+Milestone 2 uses Mapbox GL for the interactive map and Mapbox Geocoding for
+location search. Add a public Mapbox token to `.env`:
+
+```bash
+NEXT_PUBLIC_MAPBOX_TOKEN=pk.your_mapbox_public_token
+```
+
+Restart `npm run dev` after changing `.env`.
