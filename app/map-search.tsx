@@ -6,6 +6,7 @@ import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 25;
 const selectionSourceId = "selected-area";
@@ -42,6 +43,24 @@ type BoundingBox = {
   west: number;
 };
 
+type OsmData = {
+  bbox: BoundingBox;
+  counts: {
+    buildings: number;
+    roads: number;
+    openLand: number;
+  };
+  buildings: unknown[];
+  roads: unknown[];
+  openLand: unknown[];
+};
+
+type OsmResponse = {
+  status: "ok" | "error";
+  data?: OsmData;
+  message?: string;
+};
+
 export default function MapSearch() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
@@ -57,6 +76,9 @@ export default function MapSearch() {
   const [selectedBounds, setSelectedBounds] = useState<BoundingBox | null>(null);
   const [selectionAreaKm2, setSelectionAreaKm2] = useState<number | null>(null);
   const [selectionError, setSelectionError] = useState<string | null>(null);
+  const [osmData, setOsmData] = useState<OsmData | null>(null);
+  const [isFetchingOsm, setIsFetchingOsm] = useState(false);
+  const [osmError, setOsmError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -202,6 +224,8 @@ export default function MapSearch() {
     setSelectedBounds(null);
     setSelectionAreaKm2(null);
     setSelectionError(null);
+    setOsmData(null);
+    setOsmError(null);
   }
 
   function handleSelectionPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -265,8 +289,44 @@ export default function MapSearch() {
     setSelectionBox(null);
     setSelectedBounds(bounds);
     setSelectionAreaKm2(areaKm2);
+    setOsmData(null);
+    setOsmError(null);
     setSelectionError(null);
     setIsSelectingArea(false);
+  }
+
+  async function fetchSelectedAreaData() {
+    if (!selectedBounds) {
+      setOsmError("Select an area first.");
+      return;
+    }
+
+    setIsFetchingOsm(true);
+    setOsmError(null);
+
+    try {
+      const response = await fetch(`${apiUrl}/api/osm`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          bbox: selectedBounds
+        })
+      });
+      const payload = (await response.json()) as OsmResponse;
+
+      if (!response.ok || payload.status !== "ok" || !payload.data) {
+        throw new Error(payload.message ?? "Unable to fetch map data.");
+      }
+
+      setOsmData(payload.data);
+    } catch (fetchError) {
+      setOsmData(null);
+      setOsmError(fetchError instanceof Error ? fetchError.message : "Unable to fetch map data.");
+    } finally {
+      setIsFetchingOsm(false);
+    }
   }
 
   function getRelativePoint(event: PointerEvent<HTMLDivElement>): ScreenPoint {
@@ -310,7 +370,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
             </div>
             <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-              Milestone 3
+              Milestone 4
             </span>
           </div>
 
@@ -391,6 +451,34 @@ export default function MapSearch() {
                     Approx. area: {selectionAreaKm2.toFixed(2)} km2
                   </p>
                 ) : null}
+                <button
+                  className="mt-4 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={isFetchingOsm}
+                  onClick={fetchSelectedAreaData}
+                  type="button"
+                >
+                  {isFetchingOsm ? "Fetching map data..." : "Fetch Map Data"}
+                </button>
+              </div>
+            ) : null}
+
+            {osmError ? (
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+                {osmError}
+              </p>
+            ) : null}
+
+            {osmData ? (
+              <div className="mt-4 rounded border border-white/10 bg-[#0d100f] p-3">
+                <p className="text-xs font-semibold uppercase text-white/45">OSM data</p>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <Count label="Buildings" value={osmData.counts.buildings} />
+                  <Count label="Roads" value={osmData.counts.roads} />
+                  <Count label="Open land" value={osmData.counts.openLand} />
+                </div>
+                <pre className="mt-3 max-h-72 overflow-auto rounded border border-white/10 bg-black/35 p-3 text-xs leading-5 text-white/70">
+                  {JSON.stringify(osmData, null, 2)}
+                </pre>
               </div>
             ) : null}
           </section>
@@ -414,7 +502,7 @@ export default function MapSearch() {
           ) : null}
 
           <div className="mt-8 border-t border-white/10 pt-5 text-sm leading-6 text-white/55">
-            Use Select Area, then drag over a neighborhood-sized region.
+            Select a small area, then fetch real roads and buildings from OpenStreetMap.
           </div>
         </aside>
 
@@ -463,6 +551,15 @@ function Coordinate({ label, value }: { label: string; value: number }) {
     <div>
       <dt className="text-xs text-white/45">{label}</dt>
       <dd className="mt-1 font-mono text-xs text-white/85">{value.toFixed(6)}</dd>
+    </div>
+  );
+}
+
+function Count({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded border border-white/10 bg-white/[0.04] px-2 py-2">
+      <p className="text-[11px] text-white/45">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
 }

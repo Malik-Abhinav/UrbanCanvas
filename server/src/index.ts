@@ -2,6 +2,7 @@ import cors from "cors";
 import "dotenv/config";
 import express from "express";
 import { checkDatabase } from "./db.js";
+import { fetchOsmData } from "./osm.js";
 
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
@@ -30,6 +31,22 @@ app.get("/api/health", async (_req, res) => {
     service: "urbancanvas-api",
     database
   });
+});
+
+app.post("/api/osm", async (req, res) => {
+  try {
+    const data = await fetchOsmData(req.body?.bbox);
+
+    res.json({
+      status: "ok",
+      data
+    });
+  } catch (error) {
+    res.status(400).json({
+      status: "error",
+      message: error instanceof Error ? error.message : "Unable to fetch OSM data"
+    });
+  }
 });
 
 app.listen(port, () => {
