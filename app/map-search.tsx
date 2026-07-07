@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
-import type { LngLatLike, Map } from "mapbox-gl";
+import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const delhiCenter: [number, number] = [77.209, 28.6139];
+const maxSelectionAreaKm2 = 25;
+const selectionSourceId = "selected-area";
+const selectionFillLayerId = "selected-area-fill";
+const selectionLineLayerId = "selected-area-line";
 
 type SearchResult = {
   id: string;
@@ -19,14 +23,40 @@ type GeocodingResponse = {
   message?: string;
 };
 
+type ScreenPoint = {
+  x: number;
+  y: number;
+};
+
+type SelectionBox = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type BoundingBox = {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+};
+
 export default function MapSearch() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
+  const dragStartRef = useRef<ScreenPoint | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedPlace, setSelectedPlace] = useState("Delhi, India");
   const [isSearching, setIsSearching] = useState(false);
+  const [isSelectingArea, setIsSelectingArea] = useState(false);
+  const [isDraggingSelection, setIsDraggingSelection] = useState(false);
+  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
+  const [selectedBounds, setSelectedBounds] = useState<BoundingBox | null>(null);
+  const [selectionAreaKm2, setSelectionAreaKm2] = useState<number | null>(null);
+  const [selectionError, setSelectionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -52,6 +82,9 @@ export default function MapSearch() {
       .setLngLat(delhiCenter)
       .addTo(map);
     mapRef.current = map;
+    map.on("load", () => {
+      ensureSelectionLayer(map);
+    });
 
     return () => {
       markerRef.current?.remove();
@@ -60,6 +93,33 @@ export default function MapSearch() {
       markerRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    if (isSelectingArea) {
+      disableMapInteractions(map);
+      map.getCanvas().style.cursor = "crosshair";
+      return;
+    }
+
+    enableMapInteractions(map);
+    map.getCanvas().style.cursor = "";
+    setIsDraggingSelection(false);
+    dragStartRef.current = null;
+  }, [isSelectingArea]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) {
+      return;
+    }
+
+    syncSelectionLayer(map, selectedBounds);
+  }, [selectedBounds]);
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -130,6 +190,116 @@ export default function MapSearch() {
     });
   }
 
+  function toggleAreaSelection() {
+    setIsSelectingArea((current) => !current);
+    setSelectionError(null);
+    setSelectionBox(null);
+    dragStartRef.current = null;
+  }
+
+  function clearSelection() {
+    setSelectionBox(null);
+    setSelectedBounds(null);
+    setSelectionAreaKm2(null);
+    setSelectionError(null);
+  }
+
+  function handleSelectionPointerDown(event: PointerEvent<HTMLDivElement>) {
+    if (!isSelectingArea || !mapRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    const point = getRelativePoint(event);
+    dragStartRef.current = point;
+    setIsDraggingSelection(true);
+    setSelectionError(null);
+    setSelectionBox({
+      left: point.x,
+      top: point.y,
+      width: 0,
+      height: 0
+    });
+  }
+
+  function handleSelectionPointerMove(event: PointerEvent<HTMLDivElement>) {
+    if (!isDraggingSelection || !dragStartRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    setSelectionBox(getSelectionBox(dragStartRef.current, getRelativePoint(event)));
+  }
+
+  function handleSelectionPointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (!isDraggingSelection || !dragStartRef.current || !mapRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.currentTarget.releasePointerCapture(event.pointerId);
+
+    const finalBox = getSelectionBox(dragStartRef.current, getRelativePoint(event));
+    setIsDraggingSelection(false);
+    dragStartRef.current = null;
+
+    if (finalBox.width < 8 || finalBox.height < 8) {
+      setSelectionBox(null);
+      setSelectionError("Drag a larger box to select an area.");
+      return;
+    }
+
+    const bounds = getBoundsFromSelection(finalBox);
+    const areaKm2 = getApproximateAreaKm2(bounds);
+
+    if (areaKm2 > maxSelectionAreaKm2) {
+      setSelectionBox(null);
+      setSelectedBounds(null);
+      setSelectionAreaKm2(null);
+      setSelectionError("Select a smaller area.");
+      return;
+    }
+
+    setSelectionBox(null);
+    setSelectedBounds(bounds);
+    setSelectionAreaKm2(areaKm2);
+    setSelectionError(null);
+    setIsSelectingArea(false);
+  }
+
+  function getRelativePoint(event: PointerEvent<HTMLDivElement>): ScreenPoint {
+    const rect = event.currentTarget.getBoundingClientRect();
+
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top
+    };
+  }
+
+  function getBoundsFromSelection(box: SelectionBox): BoundingBox {
+    const map = mapRef.current;
+    if (!map) {
+      return {
+        north: 0,
+        south: 0,
+        east: 0,
+        west: 0
+      };
+    }
+
+    const northwest = map.unproject([box.left, box.top]);
+    const southeast = map.unproject([box.left + box.width, box.top + box.height]);
+
+    return {
+      north: Math.max(northwest.lat, southeast.lat),
+      south: Math.min(northwest.lat, southeast.lat),
+      east: Math.max(northwest.lng, southeast.lng),
+      west: Math.min(northwest.lng, southeast.lng)
+    };
+  }
+
   return (
     <main className="min-h-screen bg-[#111412] text-[#f7faf4]">
       <div className="grid min-h-screen lg:grid-cols-[380px_1fr]">
@@ -140,7 +310,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
             </div>
             <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-              Milestone 2
+              Milestone 3
             </span>
           </div>
 
@@ -178,6 +348,53 @@ export default function MapSearch() {
             <p className="mt-2 text-sm leading-6 text-white/80">{selectedPlace}</p>
           </section>
 
+          <section className="mt-6 border-t border-white/10 pt-5">
+            <div className="flex gap-2">
+              <button
+                className={`flex-1 rounded px-4 py-2.5 text-sm font-semibold transition ${
+                  isSelectingArea
+                    ? "bg-[#f5c542] text-[#111412] hover:bg-[#ffd85a]"
+                    : "border border-white/15 bg-white/[0.04] text-white hover:border-[#f5c542]/50 hover:bg-white/[0.08]"
+                }`}
+                onClick={toggleAreaSelection}
+                type="button"
+              >
+                {isSelectingArea ? "Selecting..." : "Select Area"}
+              </button>
+              <button
+                className="rounded border border-white/15 px-4 py-2.5 text-sm font-semibold text-white/75 transition hover:border-white/30 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={!selectedBounds}
+                onClick={clearSelection}
+                type="button"
+              >
+                Clear
+              </button>
+            </div>
+
+            {selectionError ? (
+              <p className="mt-3 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]">
+                {selectionError}
+              </p>
+            ) : null}
+
+            {selectedBounds ? (
+              <div className="mt-4 rounded border border-white/10 bg-white/[0.04] p-3">
+                <p className="text-xs font-semibold uppercase text-white/45">Selected bounds</p>
+                <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+                  <Coordinate label="North" value={selectedBounds.north} />
+                  <Coordinate label="South" value={selectedBounds.south} />
+                  <Coordinate label="East" value={selectedBounds.east} />
+                  <Coordinate label="West" value={selectedBounds.west} />
+                </dl>
+                {selectionAreaKm2 !== null ? (
+                  <p className="mt-3 text-xs text-white/55">
+                    Approx. area: {selectionAreaKm2.toFixed(2)} km2
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
           {results.length > 0 ? (
             <section className="mt-6">
               <p className="text-xs font-semibold uppercase text-white/45">Results</p>
@@ -197,12 +414,32 @@ export default function MapSearch() {
           ) : null}
 
           <div className="mt-8 border-t border-white/10 pt-5 text-sm leading-6 text-white/55">
-            Delhi is loaded by default.
+            Use Select Area, then drag over a neighborhood-sized region.
           </div>
         </aside>
 
         <section className="relative min-h-[62vh] overflow-hidden bg-[#0d100f] lg:min-h-screen">
           <div ref={mapContainerRef} className="absolute inset-0" />
+          <div
+            className={`absolute inset-0 ${
+              isSelectingArea ? "cursor-crosshair" : "pointer-events-none"
+            }`}
+            onPointerDown={handleSelectionPointerDown}
+            onPointerMove={handleSelectionPointerMove}
+            onPointerUp={handleSelectionPointerUp}
+          >
+            {selectionBox && isDraggingSelection ? (
+              <div
+                className="absolute border-2 border-[#f5c542] bg-[#f5c542]/20"
+                style={{
+                  height: selectionBox.height,
+                  left: selectionBox.left,
+                  top: selectionBox.top,
+                  width: selectionBox.width
+                }}
+              />
+            ) : null}
+          </div>
 
           {!mapboxToken ? (
             <div className="absolute inset-0 flex items-center justify-center p-6">
@@ -219,4 +456,123 @@ export default function MapSearch() {
       </div>
     </main>
   );
+}
+
+function Coordinate({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <dt className="text-xs text-white/45">{label}</dt>
+      <dd className="mt-1 font-mono text-xs text-white/85">{value.toFixed(6)}</dd>
+    </div>
+  );
+}
+
+function getSelectionBox(start: ScreenPoint, end: ScreenPoint): SelectionBox {
+  return {
+    left: Math.min(start.x, end.x),
+    top: Math.min(start.y, end.y),
+    width: Math.abs(end.x - start.x),
+    height: Math.abs(end.y - start.y)
+  };
+}
+
+function getApproximateAreaKm2(bounds: BoundingBox) {
+  const centerLatitude = ((bounds.north + bounds.south) / 2) * (Math.PI / 180);
+  const kmPerLatitudeDegree = 111.32;
+  const kmPerLongitudeDegree = 111.32 * Math.cos(centerLatitude);
+  const heightKm = Math.abs(bounds.north - bounds.south) * kmPerLatitudeDegree;
+  const widthKm = Math.abs(bounds.east - bounds.west) * kmPerLongitudeDegree;
+
+  return widthKm * heightKm;
+}
+
+function disableMapInteractions(map: Map) {
+  map.dragPan.disable();
+  map.scrollZoom.disable();
+  map.boxZoom.disable();
+  map.dragRotate.disable();
+  map.keyboard.disable();
+  map.doubleClickZoom.disable();
+  map.touchZoomRotate.disable();
+}
+
+function enableMapInteractions(map: Map) {
+  map.dragPan.enable();
+  map.scrollZoom.enable();
+  map.boxZoom.enable();
+  map.dragRotate.enable();
+  map.keyboard.enable();
+  map.doubleClickZoom.enable();
+  map.touchZoomRotate.enable();
+}
+
+function ensureSelectionLayer(map: Map) {
+  if (!map.getSource(selectionSourceId)) {
+    map.addSource(selectionSourceId, {
+      type: "geojson",
+      data: getEmptyFeatureCollection()
+    });
+  }
+
+  if (!map.getLayer(selectionFillLayerId)) {
+    map.addLayer({
+      id: selectionFillLayerId,
+      source: selectionSourceId,
+      type: "fill",
+      paint: {
+        "fill-color": "#f5c542",
+        "fill-opacity": 0.2
+      }
+    });
+  }
+
+  if (!map.getLayer(selectionLineLayerId)) {
+    map.addLayer({
+      id: selectionLineLayerId,
+      source: selectionSourceId,
+      type: "line",
+      paint: {
+        "line-color": "#f5c542",
+        "line-width": 2
+      }
+    });
+  }
+}
+
+function syncSelectionLayer(map: Map, bounds: BoundingBox | null) {
+  ensureSelectionLayer(map);
+
+  const source = map.getSource(selectionSourceId) as GeoJSONSource | undefined;
+  source?.setData(bounds ? getBoundsFeatureCollection(bounds) : getEmptyFeatureCollection());
+}
+
+function getBoundsFeatureCollection(bounds: BoundingBox): Parameters<GeoJSONSource["setData"]>[0] {
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [
+            [
+              [bounds.west, bounds.north],
+              [bounds.east, bounds.north],
+              [bounds.east, bounds.south],
+              [bounds.west, bounds.south],
+              [bounds.west, bounds.north]
+            ]
+          ]
+        }
+      }
+    ]
+  };
+}
+
+function getEmptyFeatureCollection(): Parameters<GeoJSONSource["setData"]>[0] {
+  return {
+    type: "FeatureCollection",
+    features: []
+  };
 }
