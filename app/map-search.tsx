@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
-import CanvasRenderer from "./canvas-renderer";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
+import SatelliteOverlay from "./satellite-overlay";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -45,6 +45,13 @@ type BoundingBox = {
   west: number;
 };
 
+type OverlayBox = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
 type OsmResponse = {
   status: "ok" | "error";
   data?: OsmData;
@@ -69,6 +76,8 @@ export default function MapSearch() {
   const [osmData, setOsmData] = useState<OsmData | null>(null);
   const [isFetchingOsm, setIsFetchingOsm] = useState(false);
   const [osmError, setOsmError] = useState<string | null>(null);
+  const [isAreaConfirmed, setIsAreaConfirmed] = useState(false);
+  const [overlayBox, setOverlayBox] = useState<OverlayBox | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -80,7 +89,7 @@ export default function MapSearch() {
 
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
-      style: "mapbox://styles/mapbox/dark-v11",
+      style: "mapbox://styles/mapbox/satellite-v9",
       center: delhiCenter,
       zoom: 10.8,
       pitch: 0,
@@ -118,11 +127,13 @@ export default function MapSearch() {
       return;
     }
 
-    enableMapInteractions(map);
+    if (!isAreaConfirmed) {
+      enableMapInteractions(map);
+    }
     map.getCanvas().style.cursor = "";
     setIsDraggingSelection(false);
     dragStartRef.current = null;
-  }, [isSelectingArea]);
+  }, [isAreaConfirmed, isSelectingArea]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -216,6 +227,12 @@ export default function MapSearch() {
     setSelectionError(null);
     setOsmData(null);
     setOsmError(null);
+    setIsAreaConfirmed(false);
+    setOverlayBox(null);
+    const map = mapRef.current;
+    if (map) {
+      enableMapInteractions(map);
+    }
   }
 
   function handleSelectionPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -281,16 +298,49 @@ export default function MapSearch() {
     setSelectionAreaKm2(areaKm2);
     setOsmData(null);
     setOsmError(null);
+    setIsAreaConfirmed(false);
+    setOverlayBox(null);
     setSelectionError(null);
     setIsSelectingArea(false);
   }
 
-  async function fetchSelectedAreaData() {
+  async function confirmSelectedArea() {
     if (!selectedBounds) {
       setOsmError("Select an area first.");
       return;
     }
 
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    setIsAreaConfirmed(true);
+    setOverlayBox(null);
+    setResults([]);
+    setSelectionError(null);
+    disableMapInteractions(map);
+
+    map.fitBounds(
+      [
+        [selectedBounds.west, selectedBounds.south],
+        [selectedBounds.east, selectedBounds.north]
+      ],
+      {
+        duration: 700,
+        padding: 48
+      }
+    );
+
+    map.once("moveend", () => {
+      disableMapInteractions(map);
+      setOverlayBox(getOverlayBoxFromBounds(map, selectedBounds));
+    });
+
+    void fetchSelectedAreaData(selectedBounds);
+  }
+
+  async function fetchSelectedAreaData(bounds: BoundingBox) {
     setIsFetchingOsm(true);
     setOsmError(null);
 
@@ -301,7 +351,7 @@ export default function MapSearch() {
           "content-type": "application/json"
         },
         body: JSON.stringify({
-          bbox: selectedBounds
+          bbox: bounds
         })
       });
       const payload = (await response.json()) as OsmResponse;
@@ -364,7 +414,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
             </div>
             <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-              Milestone 5
+              Milestone 4
             </span>
           </div>
 
@@ -447,11 +497,11 @@ export default function MapSearch() {
                 ) : null}
                 <button
                   className="mt-4 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={isFetchingOsm}
-                  onClick={fetchSelectedAreaData}
+                  disabled={isAreaConfirmed}
+                  onClick={confirmSelectedArea}
                   type="button"
                 >
-                  {isFetchingOsm ? "Fetching map data..." : "Fetch Map Data"}
+                  {isAreaConfirmed ? "Area Confirmed" : "Confirm Area"}
                 </button>
               </div>
             ) : null}
@@ -464,15 +514,12 @@ export default function MapSearch() {
 
             {osmData ? (
               <div className="mt-4 rounded border border-white/10 bg-[#0d100f] p-3">
-                <p className="text-xs font-semibold uppercase text-white/45">OSM data</p>
+                <p className="text-xs font-semibold uppercase text-white/45">OSM data stored</p>
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <Count label="Buildings" value={osmData.counts.buildings} />
                   <Count label="Roads" value={osmData.counts.roads} />
                   <Count label="Open land" value={osmData.counts.openLand} />
                 </div>
-                <pre className="mt-3 max-h-72 overflow-auto rounded border border-white/10 bg-black/35 p-3 text-xs leading-5 text-white/70">
-                  {JSON.stringify(osmData, null, 2)}
-                </pre>
               </div>
             ) : null}
           </section>
@@ -496,7 +543,7 @@ export default function MapSearch() {
           ) : null}
 
           <div className="mt-8 border-t border-white/10 pt-5 text-sm leading-6 text-white/55">
-            Fetch OSM data, then inspect the simplified canvas rendering.
+            Confirm an area to freeze satellite imagery and place a transparent canvas over it.
           </div>
         </aside>
 
@@ -504,13 +551,13 @@ export default function MapSearch() {
           <div ref={mapContainerRef} className="absolute inset-0" />
           <div
             className={`absolute inset-0 ${
-              isSelectingArea && !osmData ? "cursor-crosshair" : "pointer-events-none"
+              isSelectingArea && !isAreaConfirmed ? "cursor-crosshair" : "pointer-events-none"
             }`}
             onPointerDown={handleSelectionPointerDown}
             onPointerMove={handleSelectionPointerMove}
             onPointerUp={handleSelectionPointerUp}
           >
-            {selectionBox && isDraggingSelection && !osmData ? (
+            {selectionBox && isDraggingSelection && !isAreaConfirmed ? (
               <div
                 className="absolute border-2 border-[#f5c542] bg-[#f5c542]/20"
                 style={{
@@ -523,9 +570,28 @@ export default function MapSearch() {
             ) : null}
           </div>
 
-          {osmData ? <CanvasRenderer data={osmData} onBackToMap={() => setOsmData(null)} /> : null}
+          {isAreaConfirmed && overlayBox ? (
+            <div
+              className="absolute overflow-hidden"
+              style={{
+                height: overlayBox.height,
+                left: overlayBox.left,
+                top: overlayBox.top,
+                width: overlayBox.width
+              }}
+            >
+              <SatelliteOverlay height={overlayBox.height} width={overlayBox.width} />
+            </div>
+          ) : null}
 
-          {!mapboxToken && !osmData ? (
+          {isAreaConfirmed ? (
+            <div className="absolute right-4 top-4 rounded border border-white/15 bg-[#161a18]/90 px-3 py-2 text-sm text-white/75 shadow-xl">
+              Satellite base frozen. Canvas overlay ready.
+              {isFetchingOsm ? <span className="ml-2 text-[#f5c542]">Fetching OSM...</span> : null}
+            </div>
+          ) : null}
+
+          {!mapboxToken && !isAreaConfirmed ? (
             <div className="absolute inset-0 flex items-center justify-center p-6">
               <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
                 <h2 className="text-xl font-semibold">Mapbox token needed</h2>
@@ -593,6 +659,18 @@ function Count({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
+}
+
+function getOverlayBoxFromBounds(map: Map, bounds: BoundingBox): OverlayBox {
+  const northwest = map.project([bounds.west, bounds.north]);
+  const southeast = map.project([bounds.east, bounds.south]);
+
+  return {
+    left: Math.min(northwest.x, southeast.x),
+    top: Math.min(northwest.y, southeast.y),
+    width: Math.abs(southeast.x - northwest.x),
+    height: Math.abs(southeast.y - northwest.y)
+  };
 }
 
 function getSelectionBox(start: ScreenPoint, end: ScreenPoint): SelectionBox {
