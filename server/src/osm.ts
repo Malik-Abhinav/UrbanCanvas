@@ -31,7 +31,7 @@ type OsmFeature = {
 };
 
 const overpassUrl = "https://overpass-api.de/api/interpreter";
-const maxAreaKm2 = 25;
+const maxAreaKm2 = 5;
 
 export async function fetchOsmData(bbox: unknown) {
   validateBoundingBox(bbox);
@@ -49,7 +49,7 @@ export async function fetchOsmData(bbox: unknown) {
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(`Overpass request failed with ${response.status}: ${text.slice(0, 240)}`);
+    throw new Error(getOverpassErrorMessage(response.status, text));
   }
 
   const data = JSON.parse(text) as OverpassResponse;
@@ -63,7 +63,7 @@ export async function fetchOsmData(bbox: unknown) {
 
 function buildOverpassQuery({ north, south, east, west }: BoundingBox) {
   return `
-[out:json][timeout:25][bbox:${south},${west},${north},${east}];
+[out:json][timeout:35][bbox:${south},${west},${north},${east}];
 (
   way["building"];
   way["highway"];
@@ -154,7 +154,7 @@ function validateBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
 
   const areaKm2 = getApproximateAreaKm2(bbox);
   if (areaKm2 > maxAreaKm2) {
-    throw new Error("Select a smaller area.");
+    throw new Error(`Select a smaller area. Keep it under ${maxAreaKm2} km2 for now.`);
   }
 }
 
@@ -181,4 +181,22 @@ function getApproximateAreaKm2(bounds: BoundingBox) {
   const widthKm = Math.abs(bounds.east - bounds.west) * kmPerLongitudeDegree;
 
   return widthKm * heightKm;
+}
+
+function getOverpassErrorMessage(status: number, body: string) {
+  if (status === 429) {
+    return "Overpass is rate limiting requests. Wait a minute, then try again.";
+  }
+
+  if (status === 504) {
+    return "Overpass timed out. Try a smaller area with fewer buildings and roads.";
+  }
+
+  if (status >= 500) {
+    return "Overpass is temporarily unavailable. Try again in a moment.";
+  }
+
+  const compactBody = body.replace(/\s+/g, " ").trim();
+
+  return `Overpass request failed with ${status}: ${compactBody.slice(0, 180)}`;
 }

@@ -4,11 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
+import CanvasRenderer from "./canvas-renderer";
+import type { OsmData, OsmFeature } from "./canvas-renderer";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const delhiCenter: [number, number] = [77.209, 28.6139];
-const maxSelectionAreaKm2 = 25;
+const maxSelectionAreaKm2 = 5;
 const selectionSourceId = "selected-area";
 const selectionFillLayerId = "selected-area-fill";
 const selectionLineLayerId = "selected-area-line";
@@ -41,18 +43,6 @@ type BoundingBox = {
   south: number;
   east: number;
   west: number;
-};
-
-type OsmData = {
-  bbox: BoundingBox;
-  counts: {
-    buildings: number;
-    roads: number;
-    openLand: number;
-  };
-  buildings: unknown[];
-  roads: unknown[];
-  openLand: unknown[];
 };
 
 type OsmResponse = {
@@ -282,7 +272,7 @@ export default function MapSearch() {
       setSelectionBox(null);
       setSelectedBounds(null);
       setSelectionAreaKm2(null);
-      setSelectionError("Select a smaller area.");
+      setSelectionError(`Select a smaller area. Keep it under ${maxSelectionAreaKm2} km2 for now.`);
       return;
     }
 
@@ -318,6 +308,10 @@ export default function MapSearch() {
 
       if (!response.ok || payload.status !== "ok" || !payload.data) {
         throw new Error(payload.message ?? "Unable to fetch map data.");
+      }
+
+      if (!isOsmData(payload.data)) {
+        throw new Error("Map data response was not in the expected format.");
       }
 
       setOsmData(payload.data);
@@ -370,7 +364,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
             </div>
             <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-              Milestone 4
+              Milestone 5
             </span>
           </div>
 
@@ -502,7 +496,7 @@ export default function MapSearch() {
           ) : null}
 
           <div className="mt-8 border-t border-white/10 pt-5 text-sm leading-6 text-white/55">
-            Select a small area, then fetch real roads and buildings from OpenStreetMap.
+            Fetch OSM data, then inspect the simplified canvas rendering.
           </div>
         </aside>
 
@@ -510,13 +504,13 @@ export default function MapSearch() {
           <div ref={mapContainerRef} className="absolute inset-0" />
           <div
             className={`absolute inset-0 ${
-              isSelectingArea ? "cursor-crosshair" : "pointer-events-none"
+              isSelectingArea && !osmData ? "cursor-crosshair" : "pointer-events-none"
             }`}
             onPointerDown={handleSelectionPointerDown}
             onPointerMove={handleSelectionPointerMove}
             onPointerUp={handleSelectionPointerUp}
           >
-            {selectionBox && isDraggingSelection ? (
+            {selectionBox && isDraggingSelection && !osmData ? (
               <div
                 className="absolute border-2 border-[#f5c542] bg-[#f5c542]/20"
                 style={{
@@ -529,7 +523,9 @@ export default function MapSearch() {
             ) : null}
           </div>
 
-          {!mapboxToken ? (
+          {osmData ? <CanvasRenderer data={osmData} onBackToMap={() => setOsmData(null)} /> : null}
+
+          {!mapboxToken && !osmData ? (
             <div className="absolute inset-0 flex items-center justify-center p-6">
               <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
                 <h2 className="text-xl font-semibold">Mapbox token needed</h2>
@@ -543,6 +539,41 @@ export default function MapSearch() {
         </section>
       </div>
     </main>
+  );
+}
+
+function isOsmData(value: unknown): value is OsmData {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const data = value as Partial<OsmData>;
+
+  return (
+    isFeatureArray(data.buildings) &&
+    isFeatureArray(data.roads) &&
+    isFeatureArray(data.openLand) &&
+    Boolean(data.bbox) &&
+    Boolean(data.counts)
+  );
+}
+
+function isFeatureArray(value: unknown): value is OsmFeature[] {
+  return (
+    Array.isArray(value) &&
+    value.every((feature) => {
+      if (!feature || typeof feature !== "object") {
+        return false;
+      }
+
+      const candidate = feature as Partial<OsmFeature>;
+
+      return (
+        typeof candidate.id === "number" &&
+        typeof candidate.kind === "string" &&
+        Array.isArray(candidate.geometry)
+      );
+    })
   );
 }
 
