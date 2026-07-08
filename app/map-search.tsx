@@ -31,6 +31,11 @@ type ScreenPoint = {
   y: number;
 };
 
+type MapPoint = {
+  lat: number;
+  lng: number;
+};
+
 type SelectionBox = {
   left: number;
   top: number;
@@ -78,6 +83,7 @@ export default function MapSearch() {
   const [osmError, setOsmError] = useState<string | null>(null);
   const [isAreaConfirmed, setIsAreaConfirmed] = useState(false);
   const [overlayBox, setOverlayBox] = useState<OverlayBox | null>(null);
+  const [mapRevision, setMapRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -105,6 +111,9 @@ export default function MapSearch() {
     mapRef.current = map;
     map.on("load", () => {
       ensureSelectionLayer(map);
+    });
+    map.on("move", () => {
+      setMapRevision((current) => current + 1);
     });
 
     return () => {
@@ -320,6 +329,7 @@ export default function MapSearch() {
     setResults([]);
     setSelectionError(null);
     disableMapInteractions(map);
+    syncSelectionLayer(map, null);
 
     map.fitBounds(
       [
@@ -402,6 +412,80 @@ export default function MapSearch() {
       east: Math.max(northwest.lng, southeast.lng),
       west: Math.min(northwest.lng, southeast.lng)
     };
+  }
+
+  function screenPointToMapPoint(point: ScreenPoint): MapPoint {
+    const map = mapRef.current;
+    if (!map || !overlayBox) {
+      return { lat: 0, lng: 0 };
+    }
+
+    const lngLat = map.unproject([overlayBox.left + point.x, overlayBox.top + point.y]);
+
+    return {
+      lat: lngLat.lat,
+      lng: lngLat.lng
+    };
+  }
+
+  function mapPointToScreenPoint(point: MapPoint): ScreenPoint {
+    const map = mapRef.current;
+    if (!map || !overlayBox) {
+      return { x: 0, y: 0 };
+    }
+
+    const projected = map.project([point.lng, point.lat]);
+
+    return {
+      x: projected.x - overlayBox.left,
+      y: projected.y - overlayBox.top
+    };
+  }
+
+  function panConfirmedMap(delta: ScreenPoint) {
+    const map = mapRef.current;
+    if (!map || !selectedBounds) {
+      return;
+    }
+
+    map.panBy([-delta.x, -delta.y], {
+      duration: 0
+    });
+  }
+
+  function zoomConfirmedMap(direction: "in" | "out" | "reset") {
+    const map = mapRef.current;
+    if (!map || !selectedBounds) {
+      return;
+    }
+
+    if (direction === "reset") {
+      map.fitBounds(
+        [
+          [selectedBounds.west, selectedBounds.south],
+          [selectedBounds.east, selectedBounds.north]
+        ],
+        {
+          duration: 260,
+          padding: 48
+        }
+      );
+      map.once("moveend", () => {
+        disableMapInteractions(map);
+        setOverlayBox(getOverlayBoxFromBounds(map, selectedBounds));
+      });
+      return;
+    }
+
+    const overlayCenter = overlayBox
+      ? map.unproject([overlayBox.left + overlayBox.width / 2, overlayBox.top + overlayBox.height / 2])
+      : map.getCenter();
+
+    map.easeTo({
+      around: overlayCenter,
+      duration: 180,
+      zoom: map.getZoom() + (direction === "in" ? 0.45 : -0.45)
+    });
   }
 
   return (
@@ -580,7 +664,16 @@ export default function MapSearch() {
                 width: overlayBox.width
               }}
             >
-              <SatelliteOverlay height={overlayBox.height} width={overlayBox.width} />
+              <SatelliteOverlay
+                height={overlayBox.height}
+                key="screen-size-drawing-model"
+                mapRevision={mapRevision}
+                onMapPointToScreen={(point) => mapPointToScreenPoint(point)}
+                onMapPan={(delta) => panConfirmedMap(delta)}
+                onMapZoom={(direction) => zoomConfirmedMap(direction)}
+                onScreenPointToMap={(point) => screenPointToMapPoint(point)}
+                width={overlayBox.width}
+              />
             </div>
           ) : null}
 
