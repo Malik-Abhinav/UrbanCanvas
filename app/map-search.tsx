@@ -666,12 +666,12 @@ export default function MapSearch() {
             >
               <SatelliteOverlay
                 height={overlayBox.height}
-                key="screen-size-drawing-model"
                 mapRevision={mapRevision}
                 onMapPointToScreen={(point) => mapPointToScreenPoint(point)}
                 onMapPan={(delta) => panConfirmedMap(delta)}
                 onMapZoom={(direction) => zoomConfirmedMap(direction)}
                 onScreenPointToMap={(point) => screenPointToMapPoint(point)}
+                osmRoads={osmData?.roads ?? []}
                 width={overlayBox.width}
               />
             </div>
