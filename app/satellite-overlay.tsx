@@ -26,7 +26,14 @@ type SatelliteOverlayProps = {
   onMapPan: (delta: Point) => void;
   onScreenPointToMap: (point: Point) => MapPoint;
   onMapZoom: (direction: "in" | "out" | "reset") => void;
+  osmRoads: OsmRoad[];
   width: number;
+};
+
+type OsmRoad = {
+  id: number;
+  kind: string;
+  geometry: MapPoint[];
 };
 
 type MapPoint = {
@@ -45,8 +52,8 @@ type DrawingObject =
   | {
       id: string;
       type: "road" | "bike" | "sidewalk";
-      anchor: MapPoint;
-      pixelVector: Point;
+      path: MapPoint[];
+      snapped: boolean;
     }
   | {
       id: string;
@@ -70,8 +77,8 @@ type RenderedDrawingObject =
   | {
       id: string;
       type: "road" | "bike" | "sidewalk";
-      start: Point;
-      end: Point;
+      points: number[];
+      snapped: boolean;
     }
   | {
       id: string;
@@ -91,7 +98,49 @@ type RenderedDrawingObject =
       type: "signal";
     };
 
+type ProjectedRoad = OsmRoad & {
+  points: Point[];
+};
+
+type RoadSnap = {
+  distance: number;
+  mapPoint: MapPoint;
+  point: Point;
+  road: ProjectedRoad;
+  segmentIndex: number;
+  tangent: Point;
+};
+
+type RoundaboutSnap = {
+  distance: number;
+  mapPoint: MapPoint;
+  point: Point;
+  roundaboutId: string;
+};
+
+type SnapPreview =
+  | {
+      object: RenderedDrawingObject;
+      path: MapPoint[];
+      point: Point;
+      type: "line";
+    }
+  | {
+      end: Point;
+      object: RenderedDrawingObject;
+      point: Point;
+      start: Point;
+      type: "crossing";
+    }
+  | {
+      center: Point;
+      centerMap: MapPoint;
+      object: RenderedDrawingObject;
+      type: "roundabout";
+    };
+
 const gridSize = 32;
+const snapDistance = 34;
 const defaultRoadWidth = 22;
 const bikeLaneWidth = 10;
 const sidewalkWidth = 6;
@@ -118,6 +167,7 @@ export default function SatelliteOverlay({
   onMapPointToScreen,
   onMapZoom,
   onScreenPointToMap,
+  osmRoads,
   width
 }: SatelliteOverlayProps) {
   const stageRef = useRef<Konva.Stage | null>(null);
@@ -141,6 +191,36 @@ export default function SatelliteOverlay({
 
     return objects.map((object) => getRenderedObject(object, onMapPointToScreen));
   }, [mapRevision, objects, onMapPointToScreen]);
+  const projectedRoads = useMemo(() => {
+    void mapRevision;
+
+    return osmRoads
+      .filter((road) => road.geometry.length >= 2)
+      .map((road) => ({
+        ...road,
+        points: road.geometry.map((point) => onMapPointToScreen(point))
+      }));
+  }, [mapRevision, onMapPointToScreen, osmRoads]);
+  const roundaboutSnaps = useMemo(() => {
+    void mapRevision;
+
+    return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap);
+  }, [mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
+  const snapPreview = useMemo(() => {
+    if (!draftStart || !draftEnd) {
+      return null;
+    }
+
+    return getSnapPreview(
+      activeTool,
+      draftStart,
+      draftEnd,
+      projectedRoads,
+      roundaboutSnaps,
+      onMapPointToScreen,
+      onScreenPointToMap
+    );
+  }, [activeTool, draftEnd, draftStart, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps]);
 
   function getPointerPoint() {
     const stage = stageRef.current;
@@ -228,26 +308,34 @@ export default function SatelliteOverlay({
     }
 
     if (activeTool === "road" || activeTool === "bike" || activeTool === "sidewalk") {
+      const snappedLine = snapPreview?.type === "line" ? snapPreview : null;
+
       pushObject({
-        anchor: onScreenPointToMap(draftStart),
         id: createId(activeTool),
-        pixelVector: getVector(draftStart, draftEnd),
+        path: snappedLine?.path ?? [onScreenPointToMap(draftStart), onScreenPointToMap(draftEnd)],
+        snapped: Boolean(snappedLine),
         type: activeTool
       });
     }
 
     if (activeTool === "crossing") {
+      const crossing = snapPreview?.type === "crossing" ? snapPreview : null;
+      const start = crossing?.start ?? draftStart;
+      const end = crossing?.end ?? draftEnd;
+
       pushObject({
-        anchor: onScreenPointToMap(draftStart),
+        anchor: onScreenPointToMap(start),
         id: createId("crossing"),
-        pixelVector: getVector(draftStart, draftEnd),
+        pixelVector: getVector(start, end),
         type: "crossing"
       });
     }
 
     if (activeTool === "roundabout") {
+      const roundabout = snapPreview?.type === "roundabout" ? snapPreview : null;
+
       pushObject({
-        center: onScreenPointToMap(draftStart),
+        center: roundabout ? roundabout.centerMap : onScreenPointToMap(draftStart),
         id: createId("roundabout"),
         pixelRadius: Math.max(12, distance),
         type: "roundabout"
@@ -494,16 +582,46 @@ export default function SatelliteOverlay({
             />
           ))}
 
+          {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
+
           {draftStart && draftEnd ? (
             <DrawingObjectShape
               isDraft
               isSelected={false}
-              object={getDraftObject(activeTool, draftStart, draftEnd)}
+              object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
             />
           ) : null}
         </Layer>
       </Stage>
     </div>
+  );
+}
+
+function SnapIndicator({ preview }: { preview: SnapPreview }) {
+  if (preview.type === "roundabout") {
+    return (
+      <Circle
+        dash={[5, 5]}
+        fill="rgba(245, 197, 66, 0.16)"
+        radius={18}
+        stroke="#f5c542"
+        strokeWidth={2}
+        x={preview.center.x}
+        y={preview.center.y}
+      />
+    );
+  }
+
+  return (
+    <Circle
+      fill="#f5c542"
+      opacity={0.86}
+      radius={6}
+      stroke="#101311"
+      strokeWidth={2}
+      x={preview.point.x}
+      y={preview.point.y}
+    />
   );
 }
 
@@ -526,18 +644,20 @@ function DrawingObjectShape({
       <Group opacity={opacity} onClick={onClick}>
         <Line
           lineCap="round"
-          points={[object.start.x, object.start.y, object.end.x, object.end.y]}
+          lineJoin="round"
+          points={object.points}
           stroke="#222729"
           strokeWidth={defaultRoadWidth}
         />
         <Line
           dash={[12, 10]}
           lineCap="round"
-          points={[object.start.x, object.start.y, object.end.x, object.end.y]}
+          lineJoin="round"
+          points={object.points}
           stroke="#d8d2c4"
           strokeWidth={2}
         />
-        {isSelected ? <SelectionLine end={object.end} start={object.start} width={defaultRoadWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={defaultRoadWidth + 7} /> : null}
       </Group>
     );
   }
@@ -547,18 +667,20 @@ function DrawingObjectShape({
       <Group opacity={opacity} onClick={onClick}>
         <Line
           lineCap="round"
-          points={[object.start.x, object.start.y, object.end.x, object.end.y]}
+          lineJoin="round"
+          points={object.points}
           stroke="#22c55e"
           strokeWidth={bikeLaneWidth}
         />
         <Line
           dash={[6, 7]}
           lineCap="round"
-          points={[object.start.x, object.start.y, object.end.x, object.end.y]}
+          lineJoin="round"
+          points={object.points}
           stroke="#ddffe9"
           strokeWidth={1.5}
         />
-        {isSelected ? <SelectionLine end={object.end} start={object.start} width={bikeLaneWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={bikeLaneWidth + 7} /> : null}
       </Group>
     );
   }
@@ -568,11 +690,12 @@ function DrawingObjectShape({
       <Group opacity={opacity} onClick={onClick}>
         <Line
           lineCap="round"
-          points={[object.start.x, object.start.y, object.end.x, object.end.y]}
+          lineJoin="round"
+          points={object.points}
           stroke="#e5e7eb"
           strokeWidth={sidewalkWidth}
         />
-        {isSelected ? <SelectionLine end={object.end} start={object.start} width={sidewalkWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={sidewalkWidth + 7} /> : null}
       </Group>
     );
   }
@@ -642,16 +765,255 @@ function DrawingObjectShape({
   return null;
 }
 
-function SelectionLine({ end, start, width }: { end: Point; start: Point; width: number }) {
+function SelectionLine({ points, width }: { points: number[]; width: number }) {
   return (
     <Line
       lineCap="round"
-      points={[start.x, start.y, end.x, end.y]}
+      lineJoin="round"
+      points={points}
       stroke="#f5c542"
       strokeWidth={width}
       opacity={0.34}
     />
   );
+}
+
+function getSnapPreview(
+  tool: Tool,
+  start: Point,
+  end: Point,
+  roads: ProjectedRoad[],
+  roundaboutSnaps: RoundaboutSnap[],
+  projectMapPoint: (point: MapPoint) => Point,
+  unprojectScreenPoint: (point: Point) => MapPoint
+): SnapPreview | null {
+  if (tool === "road" || tool === "bike" || tool === "sidewalk") {
+    const startRoundaboutSnap = getNearestRoundaboutSnap(start, roundaboutSnaps);
+    const endRoundaboutSnap = getNearestRoundaboutSnap(end, roundaboutSnaps);
+
+    if (startRoundaboutSnap || endRoundaboutSnap) {
+      const startSnap = startRoundaboutSnap ?? getNearestRoadSnap(start, roads);
+      const endSnap = endRoundaboutSnap ?? getNearestRoadSnap(end, roads);
+      const path = [
+        startSnap?.mapPoint ?? unprojectScreenPoint(start),
+        endSnap?.mapPoint ?? unprojectScreenPoint(end)
+      ];
+      const points = path.flatMap((point) => {
+        const projected = projectMapPoint(point);
+
+        return [projected.x, projected.y];
+      });
+
+      return {
+        object: {
+          id: "draft-roundabout-snapped-line",
+          points,
+          snapped: true,
+          type: tool
+        },
+        path,
+        point: (endRoundaboutSnap ?? startRoundaboutSnap)?.point ?? end,
+        type: "line"
+      };
+    }
+
+    const startSnap = getNearestRoadSnap(start, roads);
+    const endSnap = getNearestRoadSnap(end, roads);
+
+    if (!startSnap || !endSnap || startSnap.road.id !== endSnap.road.id) {
+      return null;
+    }
+
+    const path = getRoadPathBetweenSnaps(startSnap, endSnap);
+    const points = path.flatMap((point) => {
+      const projected = projectMapPoint(point);
+
+      return [projected.x, projected.y];
+    });
+
+    return {
+      object: {
+        id: "draft-snapped-line",
+        points,
+        snapped: true,
+        type: tool
+      },
+      path,
+      point: endSnap.point,
+      type: "line"
+    };
+  }
+
+  if (tool === "crossing") {
+    const midpoint = getMidpoint(start, end);
+    const snap = getNearestRoadSnap(midpoint, roads);
+    if (!snap) {
+      return null;
+    }
+
+    const length = Math.max(30, getDistance(start, end));
+    const normal = normalizePoint({ x: -snap.tangent.y, y: snap.tangent.x });
+    const crossingStart = {
+      x: snap.point.x - normal.x * (length / 2),
+      y: snap.point.y - normal.y * (length / 2)
+    };
+    const crossingEnd = {
+      x: snap.point.x + normal.x * (length / 2),
+      y: snap.point.y + normal.y * (length / 2)
+    };
+
+    return {
+      end: crossingEnd,
+      object: {
+        end: crossingEnd,
+        id: "draft-snapped-crossing",
+        start: crossingStart,
+        type: "crossing"
+      },
+      point: snap.point,
+      start: crossingStart,
+      type: "crossing"
+    };
+  }
+
+  if (tool === "roundabout") {
+    const vertex = getNearestRoadVertex(start, roads);
+    if (!vertex) {
+      return null;
+    }
+
+    return {
+      center: vertex.point,
+      centerMap: vertex.mapPoint,
+      object: {
+        center: vertex.point,
+        id: "draft-snapped-roundabout",
+        radius: Math.max(12, getDistance(start, end)),
+        type: "roundabout"
+      },
+      type: "roundabout"
+    };
+  }
+
+  return null;
+}
+
+function getNearestRoadSnap(point: Point, roads: ProjectedRoad[]): RoadSnap | null {
+  let nearest: RoadSnap | null = null;
+
+  for (const road of roads) {
+    for (let index = 0; index < road.points.length - 1; index += 1) {
+      const start = road.points[index];
+      const end = road.points[index + 1];
+      const closest = getClosestPointOnSegment(point, start, end);
+
+      if (!nearest || closest.distance < nearest.distance) {
+        nearest = {
+          distance: closest.distance,
+          mapPoint: interpolateMapPoint(road.geometry[index], road.geometry[index + 1], closest.t),
+          point: closest.point,
+          road,
+          segmentIndex: index,
+          tangent: normalizePoint({
+            x: end.x - start.x,
+            y: end.y - start.y
+          })
+        };
+      }
+    }
+  }
+
+  return nearest && nearest.distance <= snapDistance ? nearest : null;
+}
+
+function getNearestRoadVertex(point: Point, roads: ProjectedRoad[]) {
+  let nearest: { distance: number; mapPoint: MapPoint; point: Point } | null = null;
+
+  for (const road of roads) {
+    for (let index = 0; index < road.points.length; index += 1) {
+      const candidate = road.points[index];
+      const distance = getDistance(point, candidate);
+
+      if (!nearest || distance < nearest.distance) {
+        nearest = {
+          distance,
+          mapPoint: road.geometry[index],
+          point: candidate
+        };
+      }
+    }
+  }
+
+  return nearest && nearest.distance <= snapDistance + 10 ? nearest : null;
+}
+
+function getRoundaboutSnapPoints(
+  objects: DrawingObject[],
+  projectMapPoint: (point: MapPoint) => Point,
+  unprojectScreenPoint: (point: Point) => MapPoint
+) {
+  const snapPoints: RoundaboutSnap[] = [];
+
+  for (const object of objects) {
+    if (object.type !== "roundabout") {
+      continue;
+    }
+
+    const center = projectMapPoint(object.center);
+
+    for (let index = 0; index < 8; index += 1) {
+      const angle = (Math.PI * 2 * index) / 8;
+      const point = {
+        x: center.x + Math.cos(angle) * object.pixelRadius,
+        y: center.y + Math.sin(angle) * object.pixelRadius
+      };
+
+      snapPoints.push({
+        distance: 0,
+        mapPoint: unprojectScreenPoint(point),
+        point,
+        roundaboutId: object.id
+      });
+    }
+  }
+
+  return snapPoints;
+}
+
+function getNearestRoundaboutSnap(point: Point, snapPoints: RoundaboutSnap[]) {
+  let nearest: RoundaboutSnap | null = null;
+
+  for (const snapPoint of snapPoints) {
+    const distance = getDistance(point, snapPoint.point);
+
+    if (!nearest || distance < nearest.distance) {
+      nearest = {
+        ...snapPoint,
+        distance
+      };
+    }
+  }
+
+  return nearest && nearest.distance <= snapDistance + 12 ? nearest : null;
+}
+
+function getRoadPathBetweenSnaps(start: RoadSnap, end: RoadSnap) {
+  const road = start.road;
+  const path: MapPoint[] = [start.mapPoint];
+
+  if (start.segmentIndex <= end.segmentIndex) {
+    for (let index = start.segmentIndex + 1; index <= end.segmentIndex; index += 1) {
+      path.push(road.geometry[index]);
+    }
+  } else {
+    for (let index = start.segmentIndex; index > end.segmentIndex; index -= 1) {
+      path.push(road.geometry[index]);
+    }
+  }
+
+  path.push(end.mapPoint);
+
+  return path;
 }
 
 function getRenderedObject(
@@ -677,15 +1039,28 @@ function getRenderedObject(
     };
   }
 
-  const start = projectMapPoint(object.anchor);
+  if (object.type === "crossing") {
+    const start = projectMapPoint(object.anchor);
+
+    return {
+      end: {
+        x: start.x + object.pixelVector.x,
+        y: start.y + object.pixelVector.y
+      },
+      id: object.id,
+      start,
+      type: "crossing"
+    };
+  }
 
   return {
     id: object.id,
-    end: {
-      x: start.x + object.pixelVector.x,
-      y: start.y + object.pixelVector.y
-    },
-    start,
+    points: object.path.flatMap((point) => {
+      const projected = projectMapPoint(point);
+
+      return [projected.x, projected.y];
+    }),
+    snapped: object.snapped,
     type: object.type
   };
 }
@@ -711,26 +1086,26 @@ function getDraftObject(tool: Tool, start: Point, end: Point): RenderedDrawingOb
 
   if (tool === "bike") {
     return {
-      end,
       id: "draft-bike",
-      start,
+      points: [start.x, start.y, end.x, end.y],
+      snapped: false,
       type: "bike"
     };
   }
 
   if (tool === "sidewalk") {
     return {
-      end,
       id: "draft-sidewalk",
-      start,
+      points: [start.x, start.y, end.x, end.y],
+      snapped: false,
       type: "sidewalk"
     };
   }
 
   return {
-    end,
     id: "draft-road",
-    start,
+    points: [start.x, start.y, end.x, end.y],
+    snapped: false,
     type: "road"
   };
 }
@@ -749,8 +1124,55 @@ function getSegmentMetrics(start: Point, end: Point) {
   };
 }
 
+function getClosestPointOnSegment(point: Point, start: Point, end: Point) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  const closest = {
+    x: start.x + dx * t,
+    y: start.y + dy * t
+  };
+
+  return {
+    distance: getDistance(point, closest),
+    point: closest,
+    t
+  };
+}
+
+function interpolateMapPoint(start: MapPoint, end: MapPoint, t: number): MapPoint {
+  return {
+    lat: start.lat + (end.lat - start.lat) * t,
+    lng: start.lng + (end.lng - start.lng) * t
+  };
+}
+
+function getMidpoint(start: Point, end: Point): Point {
+  return {
+    x: (start.x + end.x) / 2,
+    y: (start.y + end.y) / 2
+  };
+}
+
 function getDistance(start: Point, end: Point) {
   return Math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2);
+}
+
+function normalizePoint(point: Point): Point {
+  const length = Math.sqrt(point.x * point.x + point.y * point.y);
+
+  if (length === 0) {
+    return { x: 1, y: 0 };
+  }
+
+  return {
+    x: point.x / length,
+    y: point.y / length
+  };
 }
 
 function getVector(start: Point, end: Point): Point {
