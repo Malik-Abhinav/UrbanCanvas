@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Show, SignInButton, SignUpButton, UserButton, useAuth } from "@clerk/nextjs";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
 import SatelliteOverlay from "./satellite-overlay";
+import type { DrawingObject } from "./satellite-overlay";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 5;
+const autoSaveDelayMs = 120_000;
 const selectionSourceId = "selected-area";
 const selectionFillLayerId = "selected-area-fill";
 const selectionLineLayerId = "selected-area-line";
@@ -63,11 +66,38 @@ type OsmResponse = {
   message?: string;
 };
 
+type ProjectSummary = {
+  bbox: BoundingBox;
+  created_at: string;
+  id: string;
+  name: string;
+  updated_at: string;
+};
+
+type ProjectDetail = ProjectSummary & {
+  osm_data: OsmData;
+  user_edits: DrawingObject[];
+};
+
+type ProjectsResponse = {
+  status: "ok" | "error";
+  message?: string;
+  projects?: ProjectSummary[];
+};
+
+type ProjectResponse = {
+  status: "ok" | "error";
+  message?: string;
+  project?: ProjectDetail;
+};
+
 export default function MapSearch() {
+  const { getToken } = useAuth();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
   const dragStartRef = useRef<ScreenPoint | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedPlace, setSelectedPlace] = useState("Delhi, India");
@@ -84,7 +114,35 @@ export default function MapSearch() {
   const [isAreaConfirmed, setIsAreaConfirmed] = useState(false);
   const [overlayBox, setOverlayBox] = useState<OverlayBox | null>(null);
   const [mapRevision, setMapRevision] = useState(0);
+  const [isMapLoaded, setIsMapLoaded] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState("Untitled project");
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+  const [projectObjects, setProjectObjects] = useState<DrawingObject[]>([]);
+  const [loadedProjectObjects, setLoadedProjectObjects] = useState<DrawingObject[]>([]);
+  const [projectObjectsRevision, setProjectObjectsRevision] = useState(0);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [isSavingProject, setIsSavingProject] = useState(false);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(false);
+  const [projectMessage, setProjectMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
+    setProjectObjects(objects);
+  }, []);
+
+  const getProjectRequestHeaders = useCallback(async () => {
+    const token = await getToken();
+
+    if (!token) {
+      throw new Error("Sign in before using saved projects.");
+    }
+
+    return {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json"
+    };
+  }, [getToken]);
 
   useEffect(() => {
     if (!mapContainerRef.current || !mapboxToken || mapRef.current) {
@@ -110,17 +168,51 @@ export default function MapSearch() {
       .addTo(map);
     mapRef.current = map;
     map.on("load", () => {
+      setMapError(null);
+      setIsMapLoaded(true);
+      map.resize();
       ensureSelectionLayer(map);
+    });
+    map.on("idle", () => {
+      setMapError(null);
+      setIsMapLoaded(true);
+    });
+    map.on("styledata", () => {
+      if (map.isStyleLoaded()) {
+        setMapError(null);
+        setIsMapLoaded(true);
+      }
+    });
+    map.on("error", (event) => {
+      const message = event.error?.message ?? "Mapbox failed to load satellite imagery.";
+      setMapError(message);
     });
     map.on("move", () => {
       setMapRevision((current) => current + 1);
     });
 
+    const resizeObserver = new ResizeObserver(() => {
+      map.resize();
+    });
+    resizeObserver.observe(mapContainerRef.current);
+
+    window.requestAnimationFrame(() => {
+      map.resize();
+    });
+    window.setTimeout(() => {
+      map.resize();
+      if (map.loaded() || map.isStyleLoaded()) {
+        setIsMapLoaded(true);
+      }
+    }, 250);
+
     return () => {
+      resizeObserver.disconnect();
       markerRef.current?.remove();
       map.remove();
       mapRef.current = null;
       markerRef.current = null;
+      setIsMapLoaded(false);
     };
   }, []);
 
@@ -238,6 +330,10 @@ export default function MapSearch() {
     setOsmError(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
+    setCurrentProjectId(null);
+    setProjectObjects([]);
+    setLoadedProjectObjects([]);
+    setProjectObjectsRevision((current) => current + 1);
     const map = mapRef.current;
     if (map) {
       enableMapInteractions(map);
@@ -309,6 +405,10 @@ export default function MapSearch() {
     setOsmError(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
+    setCurrentProjectId(null);
+    setProjectObjects([]);
+    setLoadedProjectObjects([]);
+    setProjectObjectsRevision((current) => current + 1);
     setSelectionError(null);
     setIsSelectingArea(false);
   }
@@ -380,6 +480,174 @@ export default function MapSearch() {
       setOsmError(fetchError instanceof Error ? fetchError.message : "Unable to fetch map data.");
     } finally {
       setIsFetchingOsm(false);
+    }
+  }
+
+  const fetchProjects = useCallback(async () => {
+    setIsLoadingProjects(true);
+
+    try {
+      const response = await fetch(`${apiUrl}/api/projects`, {
+        headers: await getProjectRequestHeaders()
+      });
+      const payload = (await response.json()) as ProjectsResponse;
+
+      if (!response.ok || payload.status !== "ok") {
+        throw new Error(payload.message ?? "Unable to load projects.");
+      }
+
+      setProjects(payload.projects ?? []);
+    } catch (fetchError) {
+      setProjectMessage(fetchError instanceof Error ? fetchError.message : "Unable to load projects.");
+    } finally {
+      setIsLoadingProjects(false);
+    }
+  }, [getProjectRequestHeaders]);
+
+  useEffect(() => {
+    void fetchProjects();
+  }, [fetchProjects]);
+
+  const saveCurrentProject = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!selectedBounds || !osmData) {
+      if (!silent) {
+        setProjectMessage("Confirm an area and wait for OSM data before saving.");
+      }
+      return;
+    }
+
+    const signature = getProjectSaveSignature({
+      bbox: selectedBounds,
+      name: projectName,
+      osmData,
+      userEdits: projectObjects
+    });
+
+    if (silent && signature === lastSavedSignatureRef.current) {
+      return;
+    }
+
+    if (!silent) {
+      setIsSavingProject(true);
+      setProjectMessage(null);
+    }
+
+    try {
+      const response = await fetch(`${apiUrl}/api/projects`, {
+        method: "POST",
+        headers: await getProjectRequestHeaders(),
+        body: JSON.stringify({
+          bbox: selectedBounds,
+          id: currentProjectId,
+          name: projectName,
+          osmData,
+          userEdits: projectObjects
+        })
+      });
+      const payload = (await response.json()) as ProjectResponse;
+
+      if (!response.ok || payload.status !== "ok" || !payload.project) {
+        throw new Error(payload.message ?? "Unable to save project.");
+      }
+
+      setCurrentProjectId(payload.project.id);
+      setProjectName(payload.project.name);
+      lastSavedSignatureRef.current = signature;
+
+      if (silent) {
+        setProjectMessage(`Auto-saved ${formatProjectDate(new Date().toISOString())}.`);
+      } else {
+        setProjectMessage("Project saved.");
+      }
+
+      if (!silent) {
+        await fetchProjects();
+      }
+    } catch (saveError) {
+      setProjectMessage(saveError instanceof Error ? saveError.message : "Unable to save project.");
+    } finally {
+      if (!silent) {
+        setIsSavingProject(false);
+      }
+    }
+    },
+    [currentProjectId, fetchProjects, getProjectRequestHeaders, osmData, projectName, projectObjects, selectedBounds]
+  );
+
+  useEffect(() => {
+    if (!isAreaConfirmed || !osmData || !selectedBounds) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void saveCurrentProject({ silent: true });
+    }, autoSaveDelayMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isAreaConfirmed, osmData, projectName, projectObjects, saveCurrentProject, selectedBounds]);
+
+  async function loadProject(id: string) {
+    const map = mapRef.current;
+    if (!map) {
+      setProjectMessage("Map is not ready yet.");
+      return;
+    }
+
+    setProjectMessage(null);
+
+    try {
+      const response = await fetch(`${apiUrl}/api/projects/${id}`, {
+        headers: await getProjectRequestHeaders()
+      });
+      const payload = (await response.json()) as ProjectResponse;
+
+      if (!response.ok || payload.status !== "ok" || !payload.project) {
+        throw new Error(payload.message ?? "Unable to load project.");
+      }
+
+      const project = payload.project;
+      setCurrentProjectId(project.id);
+      setProjectName(project.name);
+      setSelectedBounds(project.bbox);
+      setSelectionAreaKm2(getApproximateAreaKm2(project.bbox));
+      setOsmData(project.osm_data);
+      setOsmError(null);
+      setIsSelectingArea(false);
+      setIsAreaConfirmed(true);
+      setOverlayBox(null);
+      setProjectObjects(project.user_edits);
+      setLoadedProjectObjects(project.user_edits);
+      setProjectObjectsRevision((current) => current + 1);
+      lastSavedSignatureRef.current = getProjectSaveSignature({
+        bbox: project.bbox,
+        name: project.name,
+        osmData: project.osm_data,
+        userEdits: project.user_edits
+      });
+      disableMapInteractions(map);
+      syncSelectionLayer(map, null);
+
+      map.fitBounds(
+        [
+          [project.bbox.west, project.bbox.south],
+          [project.bbox.east, project.bbox.north]
+        ],
+        {
+          duration: 500,
+          padding: 48
+        }
+      );
+
+      map.once("moveend", () => {
+        disableMapInteractions(map);
+        setOverlayBox(getOverlayBoxFromBounds(map, project.bbox));
+      });
+      setProjectMessage("Project loaded.");
+    } catch (loadError) {
+      setProjectMessage(loadError instanceof Error ? loadError.message : "Unable to load project.");
     }
   }
 
@@ -497,9 +765,32 @@ export default function MapSearch() {
               <p className="text-sm font-semibold text-[#f5c542]">UrbanCanvas</p>
               <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
             </div>
-            <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-              Milestone 4
-            </span>
+            <div className="flex items-center gap-2">
+              <Show when="signed-out">
+                <SignInButton mode="modal">
+                  <button
+                    className="rounded border border-white/15 px-2.5 py-1 text-xs font-semibold text-white/75 transition hover:border-[#f5c542]/50 hover:text-white"
+                    type="button"
+                  >
+                    Sign in
+                  </button>
+                </SignInButton>
+                <SignUpButton mode="modal">
+                  <button
+                    className="rounded bg-[#f5c542] px-2.5 py-1 text-xs font-semibold text-[#111412] transition hover:bg-[#ffd85a]"
+                    type="button"
+                  >
+                    Sign up
+                  </button>
+                </SignUpButton>
+              </Show>
+              <Show when="signed-in">
+                <UserButton />
+              </Show>
+              <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
+                Milestone 7
+              </span>
+            </div>
           </div>
 
           <form className="mt-8" onSubmit={handleSearch}>
@@ -608,6 +899,71 @@ export default function MapSearch() {
             ) : null}
           </section>
 
+          <section className="mt-6 border-t border-white/10 pt-5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase text-white/45">Projects</p>
+              <button
+                className="rounded border border-white/15 px-2.5 py-1 text-xs font-semibold text-white/70 transition hover:border-[#f5c542]/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                disabled={isLoadingProjects}
+                onClick={() => void fetchProjects()}
+                type="button"
+              >
+                {isLoadingProjects ? "Loading" : "Refresh"}
+              </button>
+            </div>
+
+            <label className="mt-4 block text-sm font-medium text-white/70" htmlFor="project-name">
+              Project name
+            </label>
+            <input
+              className="mt-2 w-full rounded border border-white/15 bg-white px-3 py-2.5 text-sm text-[#111412] outline-none transition focus:border-[#f5c542] focus:ring-2 focus:ring-[#f5c542]/35"
+              id="project-name"
+              onChange={(event) => setProjectName(event.target.value)}
+              value={projectName}
+            />
+            <button
+              className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSavingProject || !isAreaConfirmed || !osmData}
+              onClick={() => void saveCurrentProject()}
+              type="button"
+            >
+              {isSavingProject ? "Saving" : currentProjectId ? "Save Changes" : "Save Project"}
+            </button>
+            <p className="mt-2 text-xs leading-5 text-white/45">
+              Auto-saves 2 minutes after the latest saved-area change.
+            </p>
+
+            {projectMessage ? (
+              <p className="mt-3 rounded border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-6 text-white/70">
+                {projectMessage}
+              </p>
+            ) : null}
+
+            {projects.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                {projects.map((project) => (
+                  <button
+                    className={`w-full rounded border px-3 py-3 text-left transition ${
+                      currentProjectId === project.id
+                        ? "border-[#f5c542]/70 bg-[#f5c542]/10"
+                        : "border-white/10 bg-white/[0.04] hover:border-[#f5c542]/50 hover:bg-white/[0.08]"
+                    }`}
+                    key={project.id}
+                    onClick={() => void loadProject(project.id)}
+                    type="button"
+                  >
+                    <span className="block text-sm font-semibold text-white/85">{project.name}</span>
+                    <span className="mt-1 block text-xs text-white/45">
+                      Updated {formatProjectDate(project.updated_at)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-sm leading-6 text-white/45">No saved projects yet.</p>
+            )}
+          </section>
+
           {results.length > 0 ? (
             <section className="mt-6">
               <p className="text-xs font-semibold uppercase text-white/45">Results</p>
@@ -632,7 +988,22 @@ export default function MapSearch() {
         </aside>
 
         <section className="relative min-h-[62vh] overflow-hidden bg-[#0d100f] lg:min-h-screen">
-          <div ref={mapContainerRef} className="absolute inset-0" />
+          <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
+          {!isMapLoaded && !mapError ? (
+            <div className="pointer-events-none absolute left-4 top-4 z-10">
+              <div className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
+                Loading satellite map...
+              </div>
+            </div>
+          ) : null}
+          {mapError ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-[#0d100f] p-6">
+              <div className="max-w-md rounded border border-[#ff6b57]/30 bg-[#161a18] p-5 shadow-2xl">
+                <h2 className="text-lg font-semibold text-[#ffd1ca]">Map failed to load</h2>
+                <p className="mt-3 text-sm leading-6 text-white/70">{mapError}</p>
+              </div>
+            </div>
+          ) : null}
           <div
             className={`absolute inset-0 ${
               isSelectingArea && !isAreaConfirmed ? "cursor-crosshair" : "pointer-events-none"
@@ -666,7 +1037,10 @@ export default function MapSearch() {
             >
               <SatelliteOverlay
                 height={overlayBox.height}
+                initialObjects={loadedProjectObjects}
                 mapRevision={mapRevision}
+                objectsRevision={projectObjectsRevision}
+                onObjectsChange={handleObjectsChange}
                 onMapPointToScreen={(point) => mapPointToScreenPoint(point)}
                 onMapPan={(delta) => panConfirmedMap(delta)}
                 onMapZoom={(direction) => zoomConfirmedMap(direction)}
@@ -752,6 +1126,32 @@ function Count({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
+}
+
+function formatProjectDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(value));
+}
+
+function getProjectSaveSignature({
+  bbox,
+  name,
+  osmData,
+  userEdits
+}: {
+  bbox: BoundingBox;
+  name: string;
+  osmData: OsmData;
+  userEdits: DrawingObject[];
+}) {
+  return JSON.stringify({
+    bbox,
+    name,
+    osmData,
+    userEdits
+  });
 }
 
 function getOverlayBoxFromBounds(map: Map, bounds: BoundingBox): OverlayBox {
