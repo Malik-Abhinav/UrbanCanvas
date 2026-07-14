@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
 import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
 import type Konva from "konva";
@@ -21,7 +21,10 @@ import {
 
 type SatelliteOverlayProps = {
   height: number;
+  initialObjects: DrawingObject[];
   mapRevision: number;
+  objectsRevision: number;
+  onObjectsChange: (objects: DrawingObject[]) => void;
   onMapPointToScreen: (point: MapPoint) => Point;
   onMapPan: (delta: Point) => void;
   onScreenPointToMap: (point: Point) => MapPoint;
@@ -48,7 +51,7 @@ type Point = {
 
 type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
 
-type DrawingObject =
+export type DrawingObject =
   | {
       id: string;
       type: "road" | "bike" | "sidewalk";
@@ -162,7 +165,10 @@ const tools: Array<{
 
 export default function SatelliteOverlay({
   height,
+  initialObjects,
   mapRevision,
+  objectsRevision,
+  onObjectsChange,
   onMapPan,
   onMapPointToScreen,
   onMapZoom,
@@ -171,6 +177,7 @@ export default function SatelliteOverlay({
   width
 }: SatelliteOverlayProps) {
   const stageRef = useRef<Konva.Stage | null>(null);
+  const initialObjectsRef = useRef(initialObjects);
   const panLastPointRef = useRef<Point | null>(null);
   const [activeTool, setActiveTool] = useState<Tool>("select");
   const [hoveredTool, setHoveredTool] = useState<Tool | null>(null);
@@ -221,6 +228,22 @@ export default function SatelliteOverlay({
       onScreenPointToMap
     );
   }, [activeTool, draftEnd, draftStart, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps]);
+
+  useEffect(() => {
+    initialObjectsRef.current = initialObjects;
+  }, [initialObjects]);
+
+  useEffect(() => {
+    setObjects(initialObjectsRef.current);
+    setRedoStack([]);
+    setSelectedId(null);
+    setDraftStart(null);
+    setDraftEnd(null);
+  }, [objectsRevision]);
+
+  useEffect(() => {
+    onObjectsChange(objects);
+  }, [objects, onObjectsChange]);
 
   function getPointerPoint() {
     const stage = stageRef.current;
