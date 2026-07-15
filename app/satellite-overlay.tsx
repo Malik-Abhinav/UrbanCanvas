@@ -1,5 +1,7 @@
 "use client";
 
+import { UndirectedGraph } from "graphology";
+import { dijkstra } from "graphology-shortest-path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
 import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
@@ -14,6 +16,8 @@ import {
   Signal,
   Slash,
   SquareDashedMousePointer,
+  SquareChevronDown,
+  SquareChevronUp,
   Waypoints,
   ZoomIn,
   ZoomOut
@@ -37,6 +41,7 @@ type OsmRoad = {
   id: number;
   kind: string;
   geometry: MapPoint[];
+  tags?: Record<string, string>;
 };
 
 type MapPoint = {
@@ -50,6 +55,8 @@ type Point = {
 };
 
 type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
+
+type AnalysisMode = "idle" | "picking-path";
 
 export type DrawingObject =
   | {
@@ -103,6 +110,43 @@ type RenderedDrawingObject =
 
 type ProjectedRoad = OsmRoad & {
   points: Point[];
+};
+
+type RoadGraphNode = {
+  point: MapPoint;
+};
+
+type RoadGraphEdge = {
+  end: MapPoint;
+  hasSidewalk: boolean;
+  kind: string;
+  lengthMeters: number;
+  roadId: number;
+  segmentIndex: number;
+  start: MapPoint;
+  weight: number;
+};
+
+type RoadGraph = {
+  edgeCount: number;
+  edges: RoadGraphEdge[];
+  graph: UndirectedGraph<RoadGraphNode, RoadGraphEdge>;
+  nodeCount: number;
+  nodeIds: string[];
+};
+
+type AnalysisPath = {
+  distanceMeters: number;
+  nodeIds: string[];
+  points: MapPoint[];
+};
+
+type GraphAnalysis = {
+  deadEndEdges: RoadGraphEdge[];
+  deadEndNodes: string[];
+  graph: RoadGraph;
+  sidewalkEdgeCount: number;
+  walkabilityScore: number;
 };
 
 type RoadSnap = {
@@ -186,6 +230,11 @@ export default function SatelliteOverlay({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [draftEnd, setDraftEnd] = useState<Point | null>(null);
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("idle");
+  const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
+  const [pathStartNodeId, setPathStartNodeId] = useState<string | null>(null);
+  const [analysisPath, setAnalysisPath] = useState<AnalysisPath | null>(null);
+  const [analysisMessage, setAnalysisMessage] = useState("Pick two road points to show the shortest path.");
 
   const grid = useMemo(() => {
     const verticalLines = Math.ceil(width / gridSize);
@@ -228,6 +277,35 @@ export default function SatelliteOverlay({
       onScreenPointToMap
     );
   }, [activeTool, draftEnd, draftStart, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps]);
+  const graphAnalysis = useMemo(() => {
+    void mapRevision;
+
+    return buildGraphAnalysis(osmRoads, objects);
+  }, [mapRevision, objects, osmRoads]);
+  const renderedDeadEndEdges = useMemo(() => {
+    void mapRevision;
+
+    return graphAnalysis.deadEndEdges.map((edge) => ({
+      id: `dead-${edge.roadId}-${edge.segmentIndex}`,
+      points: getMapLinePoints([edge.start, edge.end], onMapPointToScreen)
+    }));
+  }, [graphAnalysis.deadEndEdges, mapRevision, onMapPointToScreen]);
+  const renderedAnalysisPath = useMemo(() => {
+    void mapRevision;
+
+    return analysisPath ? getMapLinePoints(analysisPath.points, onMapPointToScreen) : null;
+  }, [analysisPath, mapRevision, onMapPointToScreen]);
+  const renderedPathStart = useMemo(() => {
+    void mapRevision;
+
+    if (!pathStartNodeId) {
+      return null;
+    }
+
+    const node = graphAnalysis.graph.graph.getNodeAttributes(pathStartNodeId);
+
+    return onMapPointToScreen(node.point);
+  }, [graphAnalysis.graph.graph, mapRevision, onMapPointToScreen, pathStartNodeId]);
 
   useEffect(() => {
     initialObjectsRef.current = initialObjects;
@@ -244,6 +322,12 @@ export default function SatelliteOverlay({
   useEffect(() => {
     onObjectsChange(objects);
   }, [objects, onObjectsChange]);
+
+  useEffect(() => {
+    setAnalysisPath(null);
+    setPathStartNodeId(null);
+    setAnalysisMessage("Pick two road points to show the shortest path.");
+  }, [graphAnalysis.graph.nodeCount, graphAnalysis.graph.edgeCount]);
 
   function getPointerPoint() {
     const stage = stageRef.current;
@@ -267,6 +351,11 @@ export default function SatelliteOverlay({
     }
 
     if (activeTool === "select") {
+      if (analysisMode === "picking-path") {
+        handlePathPick(point);
+        return;
+      }
+
       setSelectedId(null);
       panLastPointRef.current = point;
       return;
@@ -446,6 +535,7 @@ export default function SatelliteOverlay({
 
     if (event.key === "Escape") {
       setActiveTool("select");
+      setAnalysisMode("idle");
       setDraftStart(null);
       setDraftEnd(null);
       panLastPointRef.current = null;
@@ -456,6 +546,47 @@ export default function SatelliteOverlay({
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
     onMapZoom(event.deltaY > 0 ? "out" : "in");
+  }
+
+  function handlePathPick(point: Point) {
+    const nearestNodeId = getNearestGraphNode(point, graphAnalysis.graph, onMapPointToScreen);
+
+    if (!nearestNodeId) {
+      setAnalysisMessage("No road node nearby. Click closer to a road intersection or bend.");
+      return;
+    }
+
+    if (!pathStartNodeId) {
+      setPathStartNodeId(nearestNodeId);
+      setAnalysisPath(null);
+      setAnalysisMessage("Start point selected. Pick an end point.");
+      return;
+    }
+
+    if (pathStartNodeId === nearestNodeId) {
+      setAnalysisMessage("Pick a different end point.");
+      return;
+    }
+
+    const nodePath = dijkstra.bidirectional(graphAnalysis.graph.graph, pathStartNodeId, nearestNodeId, "weight");
+
+    if (!nodePath || nodePath.length < 2) {
+      setAnalysisPath(null);
+      setPathStartNodeId(nearestNodeId);
+      setAnalysisMessage("No connected route found. Start point reset to the latest pick.");
+      return;
+    }
+
+    const path = getAnalysisPath(graphAnalysis.graph, nodePath);
+    setAnalysisPath(path);
+    setPathStartNodeId(null);
+    setAnalysisMessage(`Shortest path: ${formatDistance(path.distanceMeters)}.`);
+  }
+
+  function resetAnalysisPath() {
+    setPathStartNodeId(null);
+    setAnalysisPath(null);
+    setAnalysisMessage("Pick two road points to show the shortest path.");
   }
 
   return (
@@ -545,8 +676,73 @@ export default function SatelliteOverlay({
         </button>
       </div>
 
-      <div className="absolute right-3 top-3 z-10 max-w-72 rounded border border-white/20 bg-[#101311]/85 px-3 py-2 text-sm text-white/80 shadow-xl backdrop-blur">
-        {getToolHint(activeTool)} Scroll to zoom the satellite image without resizing the selected area.
+      <div className="absolute right-3 top-3 z-10 text-white">
+        {isAnalysisCollapsed ? (
+          <button
+            className="flex items-center gap-2 rounded border border-white/20 bg-[#101311]/90 px-3 py-2 text-xs font-semibold shadow-xl backdrop-blur transition hover:border-[#f5c542]/70"
+            onClick={() => setIsAnalysisCollapsed(false)}
+            type="button"
+          >
+            <SquareChevronDown size={15} />
+            Analysis
+            <span className="text-[#f5c542]">{graphAnalysis.walkabilityScore}%</span>
+          </button>
+        ) : (
+          <div className="w-64 rounded border border-white/20 bg-[#101311]/90 p-2.5 shadow-xl backdrop-blur">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase text-white/45">Road analysis</p>
+                <p className="mt-0.5 text-xl font-semibold leading-none text-[#f5c542]">
+                  {graphAnalysis.walkabilityScore}%
+                </p>
+                <p className="mt-1 text-[11px] leading-none text-white/55">sidewalk coverage</p>
+              </div>
+              <div className="flex items-start gap-1.5">
+                <button
+                  className={`rounded px-2.5 py-1.5 text-xs font-semibold transition ${
+                    analysisMode === "picking-path"
+                      ? "bg-[#f5c542] text-[#101311]"
+                      : "border border-white/15 bg-white/10 text-white hover:border-[#f5c542]/70"
+                  }`}
+                  disabled={graphAnalysis.graph.nodeCount < 2}
+                  onClick={() => {
+                    setActiveTool("select");
+                    setAnalysisMode((current) => (current === "picking-path" ? "idle" : "picking-path"));
+                    resetAnalysisPath();
+                  }}
+                  type="button"
+                >
+                  {analysisMode === "picking-path" ? "Picking" : "Pick Path"}
+                </button>
+                <button
+                  aria-label="Collapse road analysis"
+                  className="flex h-8 w-8 items-center justify-center rounded border border-white/15 bg-white/10 text-white transition hover:border-[#f5c542]/70"
+                  onClick={() => setIsAnalysisCollapsed(true)}
+                  title="Collapse road analysis"
+                  type="button"
+                >
+                  <SquareChevronUp size={15} />
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-1.5">
+              <AnalysisStat label="Nodes" value={graphAnalysis.graph.nodeCount} />
+              <AnalysisStat label="Edges" value={graphAnalysis.graph.edgeCount} />
+              <AnalysisStat label="Dead ends" value={graphAnalysis.deadEndNodes.length} />
+            </div>
+            <p className="mt-2 text-[11px] leading-4 text-white/65">{analysisMessage}</p>
+            <p className="mt-1 text-[10px] leading-4 text-white/40">Based on OSM tags and drawn sidewalks.</p>
+            {analysisPath ? (
+              <button
+                className="mt-2 w-full rounded border border-white/15 bg-white/10 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:border-[#f5c542]/70"
+                onClick={resetAnalysisPath}
+                type="button"
+              >
+                Clear Path
+              </button>
+            ) : null}
+          </div>
+        )}
       </div>
 
       <Stage
@@ -596,6 +792,42 @@ export default function SatelliteOverlay({
             />
           ))}
 
+          {renderedDeadEndEdges.map((edge) => (
+            <Line
+              key={edge.id}
+              lineCap="round"
+              lineJoin="round"
+              opacity={0.78}
+              points={edge.points}
+              stroke="#ff6b57"
+              strokeWidth={8}
+            />
+          ))}
+
+          {renderedAnalysisPath ? (
+            <Line
+              dash={[18, 8]}
+              lineCap="round"
+              lineJoin="round"
+              points={renderedAnalysisPath}
+              shadowBlur={8}
+              shadowColor="#60a5fa"
+              stroke="#60a5fa"
+              strokeWidth={8}
+            />
+          ) : null}
+
+          {renderedPathStart ? (
+            <Circle
+              fill="#60a5fa"
+              radius={8}
+              stroke="#ffffff"
+              strokeWidth={2}
+              x={renderedPathStart.x}
+              y={renderedPathStart.y}
+            />
+          ) : null}
+
           {renderedObjects.map((object) => (
             <DrawingObjectShape
               isSelected={object.id === selectedId}
@@ -616,6 +848,15 @@ export default function SatelliteOverlay({
           ) : null}
         </Layer>
       </Stage>
+    </div>
+  );
+}
+
+function AnalysisStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded border border-white/10 bg-white/[0.05] px-1.5 py-1.5">
+      <p className="text-[10px] uppercase text-white/40">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
 }
@@ -1039,6 +1280,195 @@ function getRoadPathBetweenSnaps(start: RoadSnap, end: RoadSnap) {
   return path;
 }
 
+function buildGraphAnalysis(roads: OsmRoad[], objects: DrawingObject[]): GraphAnalysis {
+  const graph = new UndirectedGraph<RoadGraphNode, RoadGraphEdge>();
+  const edges: RoadGraphEdge[] = [];
+  const sidewalkPaths = objects
+    .filter((object): object is DrawingObject & { path: MapPoint[]; type: "sidewalk" } => object.type === "sidewalk")
+    .map((object) => object.path)
+    .filter((path) => path.length >= 2);
+
+  for (const road of roads) {
+    if (road.geometry.length < 2 || isNonRoadPath(road.kind)) {
+      continue;
+    }
+
+    for (let index = 0; index < road.geometry.length - 1; index += 1) {
+      const start = road.geometry[index];
+      const end = road.geometry[index + 1];
+      const lengthMeters = getMapDistanceMeters(start, end);
+
+      if (lengthMeters < 1) {
+        continue;
+      }
+
+      const startId = getGraphNodeId(start);
+      const endId = getGraphNodeId(end);
+      if (startId === endId) {
+        continue;
+      }
+
+      const hasSidewalk = roadImpliesSidewalk(road) || hasNearbySidewalk(start, end, sidewalkPaths);
+      const edge: RoadGraphEdge = {
+        end,
+        hasSidewalk,
+        kind: road.kind,
+        lengthMeters,
+        roadId: road.id,
+        segmentIndex: index,
+        start,
+        weight: lengthMeters
+      };
+
+      graph.mergeNode(startId, { point: start });
+      graph.mergeNode(endId, { point: end });
+      graph.mergeUndirectedEdgeWithKey(`${road.id}-${index}`, startId, endId, edge);
+      edges.push(edge);
+    }
+  }
+
+  const deadEndNodes = graph.nodes().filter((nodeId) => graph.degree(nodeId) <= 1);
+  const deadEndSet = new Set(deadEndNodes);
+  const deadEndEdges = edges.filter((edge) => deadEndSet.has(getGraphNodeId(edge.start)) || deadEndSet.has(getGraphNodeId(edge.end)));
+  const sidewalkEdgeCount = edges.filter((edge) => edge.hasSidewalk).length;
+
+  return {
+    deadEndEdges,
+    deadEndNodes,
+    graph: {
+      edgeCount: graph.size,
+      edges,
+      graph,
+      nodeCount: graph.order,
+      nodeIds: graph.nodes()
+    },
+    sidewalkEdgeCount,
+    walkabilityScore: edges.length > 0 ? Math.round((sidewalkEdgeCount / edges.length) * 100) : 0
+  };
+}
+
+function getAnalysisPath(roadGraph: RoadGraph, nodeIds: string[]): AnalysisPath {
+  const points = nodeIds.map((nodeId) => roadGraph.graph.getNodeAttributes(nodeId).point);
+  let distanceMeters = 0;
+
+  for (let index = 0; index < nodeIds.length - 1; index += 1) {
+    const edgeAttributes = roadGraph.graph.getEdgeAttributes(nodeIds[index], nodeIds[index + 1]);
+    distanceMeters += edgeAttributes.lengthMeters;
+  }
+
+  return {
+    distanceMeters,
+    nodeIds,
+    points
+  };
+}
+
+function getNearestGraphNode(
+  point: Point,
+  roadGraph: RoadGraph,
+  projectMapPoint: (point: MapPoint) => Point
+) {
+  let nearest: { distance: number; nodeId: string } | null = null;
+
+  for (const nodeId of roadGraph.nodeIds) {
+    const nodePoint = projectMapPoint(roadGraph.graph.getNodeAttributes(nodeId).point);
+    const distance = getDistance(point, nodePoint);
+
+    if (!nearest || distance < nearest.distance) {
+      nearest = { distance, nodeId };
+    }
+  }
+
+  return nearest && nearest.distance <= 42 ? nearest.nodeId : null;
+}
+
+function getMapLinePoints(points: MapPoint[], projectMapPoint: (point: MapPoint) => Point) {
+  return points.flatMap((point) => {
+    const projected = projectMapPoint(point);
+
+    return [projected.x, projected.y];
+  });
+}
+
+function getGraphNodeId(point: MapPoint) {
+  return `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`;
+}
+
+function getMapDistanceMeters(start: MapPoint, end: MapPoint) {
+  const earthRadiusMeters = 6371000;
+  const startLat = toRadians(start.lat);
+  const endLat = toRadians(end.lat);
+  const deltaLat = toRadians(end.lat - start.lat);
+  const deltaLng = toRadians(end.lng - start.lng);
+  const a =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(startLat) * Math.cos(endLat) * Math.sin(deltaLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadiusMeters * c;
+}
+
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function roadImpliesSidewalk(road: OsmRoad) {
+  const sidewalkTag = road.tags?.sidewalk;
+
+  return (
+    ["footway", "path", "pedestrian", "steps", "living_street"].includes(road.kind) ||
+    Boolean(sidewalkTag && !["no", "none", "separate"].includes(sidewalkTag))
+  );
+}
+
+function isNonRoadPath(kind: string) {
+  return ["construction", "proposed", "abandoned", "raceway"].includes(kind);
+}
+
+function hasNearbySidewalk(start: MapPoint, end: MapPoint, sidewalkPaths: MapPoint[][]) {
+  const midpoint = {
+    lat: (start.lat + end.lat) / 2,
+    lng: (start.lng + end.lng) / 2
+  };
+
+  return sidewalkPaths.some((path) =>
+    path.some((point, index) => {
+      if (index === path.length - 1) {
+        return false;
+      }
+
+      return getPointToSegmentDistanceMeters(midpoint, path[index], path[index + 1]) <= 18;
+    })
+  );
+}
+
+function getPointToSegmentDistanceMeters(point: MapPoint, start: MapPoint, end: MapPoint) {
+  const referenceLat = ((point.lat + start.lat + end.lat) / 3) * (Math.PI / 180);
+  const pointXY = mapPointToLocalMeters(point, referenceLat);
+  const startXY = mapPointToLocalMeters(start, referenceLat);
+  const endXY = mapPointToLocalMeters(end, referenceLat);
+  const closest = getClosestPointOnSegment(pointXY, startXY, endXY);
+
+  return closest.distance;
+}
+
+function mapPointToLocalMeters(point: MapPoint, referenceLat: number): Point {
+  const metersPerDegree = 111320;
+
+  return {
+    x: point.lng * metersPerDegree * Math.cos(referenceLat),
+    y: point.lat * metersPerDegree
+  };
+}
+
+function formatDistance(distanceMeters: number) {
+  if (distanceMeters >= 1000) {
+    return `${(distanceMeters / 1000).toFixed(2)} km`;
+  }
+
+  return `${Math.round(distanceMeters)} m`;
+}
+
 function getRenderedObject(
   object: DrawingObject,
   projectMapPoint: (point: MapPoint) => Point
@@ -1207,26 +1637,6 @@ function getVector(start: Point, end: Point): Point {
 
 function createId(type: DrawingObject["type"]) {
   return `${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getToolHint(tool: Tool) {
-  if (tool === "select") {
-    return "Drag empty space to pan the satellite image. Select objects to delete or edit.";
-  }
-
-  if (tool === "signal") {
-    return "Click to place a traffic signal.";
-  }
-
-  if (tool === "erase") {
-    return "Click any drawn proposal to erase it.";
-  }
-
-  if (tool === "roundabout") {
-    return "Click and drag from center to set roundabout radius.";
-  }
-
-  return "Click and drag to draw on the satellite image.";
 }
 
 function getToolLabel(tool: Tool) {
