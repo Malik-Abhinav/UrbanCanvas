@@ -2,6 +2,7 @@ import cors from "cors";
 import { clerkMiddleware, getAuth } from "@clerk/express";
 import "dotenv/config";
 import express from "express";
+import { analyzeProjectChanges } from "./analysis.js";
 import { checkDatabase } from "./db.js";
 import { fetchOsmData } from "./osm.js";
 import { getProject, listProjects, saveProject } from "./projects.js";
@@ -114,6 +115,23 @@ app.post("/api/projects", async (req, res) => {
     res.status(getErrorStatus(error)).json({
       status: "error",
       message: error instanceof Error ? error.message : "Unable to save project"
+    });
+  }
+});
+
+app.post("/api/analyze", async (req, res) => {
+  try {
+    getRequiredUserId(req);
+    const analysis = analyzeProjectChanges(req.body);
+
+    res.json({
+      status: "ok",
+      analysis
+    });
+  } catch (error) {
+    res.status(getErrorStatus(error)).json({
+      status: "error",
+      message: error instanceof Error ? error.message : "Unable to analyze changes"
     });
   }
 });

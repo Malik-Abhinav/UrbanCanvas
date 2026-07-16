@@ -91,6 +91,21 @@ type ProjectResponse = {
   project?: ProjectDetail;
 };
 
+type ChangeAnalysis = {
+  disclaimer: string;
+  pedestrianImpact: string[];
+  provider: "rules";
+  safetyObservations: string[];
+  suggestions: string[];
+  summary: string;
+};
+
+type AnalysisResponse = {
+  status: "ok" | "error";
+  analysis?: ChangeAnalysis;
+  message?: string;
+};
+
 export default function MapSearch() {
   const { getToken } = useAuth();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -125,6 +140,9 @@ export default function MapSearch() {
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(false);
   const [projectMessage, setProjectMessage] = useState<string | null>(null);
+  const [changeAnalysis, setChangeAnalysis] = useState<ChangeAnalysis | null>(null);
+  const [isAnalyzingChanges, setIsAnalyzingChanges] = useState(false);
+  const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
@@ -334,6 +352,8 @@ export default function MapSearch() {
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
+    setChangeAnalysis(null);
+    setAnalysisMessage(null);
     const map = mapRef.current;
     if (map) {
       enableMapInteractions(map);
@@ -409,6 +429,8 @@ export default function MapSearch() {
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
+    setChangeAnalysis(null);
+    setAnalysisMessage(null);
     setSelectionError(null);
     setIsSelectingArea(false);
   }
@@ -621,6 +643,8 @@ export default function MapSearch() {
       setProjectObjects(project.user_edits);
       setLoadedProjectObjects(project.user_edits);
       setProjectObjectsRevision((current) => current + 1);
+      setChangeAnalysis(null);
+      setAnalysisMessage(null);
       lastSavedSignatureRef.current = getProjectSaveSignature({
         bbox: project.bbox,
         name: project.name,
@@ -648,6 +672,42 @@ export default function MapSearch() {
       setProjectMessage("Project loaded.");
     } catch (loadError) {
       setProjectMessage(loadError instanceof Error ? loadError.message : "Unable to load project.");
+    }
+  }
+
+  async function analyzeCurrentChanges() {
+    if (!selectedBounds || !osmData) {
+      setAnalysisMessage("Confirm an area and wait for OSM data before analyzing changes.");
+      return;
+    }
+
+    setIsAnalyzingChanges(true);
+    setAnalysisMessage(null);
+
+    try {
+      const response = await fetch(`${apiUrl}/api/analyze`, {
+        method: "POST",
+        headers: await getProjectRequestHeaders(),
+        body: JSON.stringify({
+          bbox: selectedBounds,
+          osmData,
+          projectName,
+          userEdits: projectObjects
+        })
+      });
+      const payload = (await response.json()) as AnalysisResponse;
+
+      if (!response.ok || payload.status !== "ok" || !payload.analysis) {
+        throw new Error(payload.message ?? "Unable to analyze changes.");
+      }
+
+      setChangeAnalysis(payload.analysis);
+      setAnalysisMessage(null);
+    } catch (analysisError) {
+      setChangeAnalysis(null);
+      setAnalysisMessage(analysisError instanceof Error ? analysisError.message : "Unable to analyze changes.");
+    } finally {
+      setIsAnalyzingChanges(false);
     }
   }
 
@@ -964,6 +1024,42 @@ export default function MapSearch() {
             )}
           </section>
 
+          <section className="mt-6 border-t border-white/10 pt-5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase text-white/45">Change analysis</p>
+              <span className="rounded border border-white/10 px-2 py-1 text-[11px] text-white/45">Rules</span>
+            </div>
+            <button
+              className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isAnalyzingChanges || !isAreaConfirmed || !osmData}
+              onClick={() => void analyzeCurrentChanges()}
+              type="button"
+            >
+              {isAnalyzingChanges ? "Analyzing" : "Analyze Changes"}
+            </button>
+            <p className="mt-2 text-xs leading-5 text-white/45">
+              Free rule-based feedback now; this endpoint can support Ollama later.
+            </p>
+
+            {analysisMessage ? (
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+                {analysisMessage}
+              </p>
+            ) : null}
+
+            {changeAnalysis ? (
+              <div className="mt-4 space-y-3 rounded border border-white/10 bg-[#0d100f] p-3">
+                <p className="text-sm leading-6 text-white/80">{changeAnalysis.summary}</p>
+                <AnalysisList title="Safety observations" items={changeAnalysis.safetyObservations} />
+                <AnalysisList title="Pedestrian impact" items={changeAnalysis.pedestrianImpact} />
+                <AnalysisList title="Suggestions" items={changeAnalysis.suggestions} />
+                <p className="rounded border border-[#f5c542]/20 bg-[#f5c542]/10 px-2.5 py-2 text-xs leading-5 text-[#ffe6a1]">
+                  {changeAnalysis.disclaimer}
+                </p>
+              </div>
+            ) : null}
+          </section>
+
           {results.length > 0 ? (
             <section className="mt-6">
               <p className="text-xs font-semibold uppercase text-white/45">Results</p>
@@ -1124,6 +1220,21 @@ function Count({ label, value }: { label: string; value: number }) {
     <div className="rounded border border-white/10 bg-white/[0.04] px-2 py-2">
       <p className="text-[11px] text-white/45">{label}</p>
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
+    </div>
+  );
+}
+
+function AnalysisList({ items, title }: { items: string[]; title: string }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold uppercase text-white/45">{title}</p>
+      <ul className="mt-2 space-y-1.5 text-sm leading-5 text-white/70">
+        {items.map((item) => (
+          <li className="border-l border-[#f5c542]/40 pl-2" key={item}>
+            {item}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
