@@ -8,7 +8,7 @@ import { fetchOsmData } from "./osm.js";
 import { getProject, listProjects, saveProject } from "./projects.js";
 
 const app = express();
-const port = Number(process.env.API_PORT ?? 3001);
+const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3001);
 const frontendOrigins = (process.env.FRONTEND_ORIGIN ?? "http://localhost:3000")
   .split(",")
   .map((origin) => origin.trim())

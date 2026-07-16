@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: urbancanvas-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build:api
+    startCommand: npm run start:api
+    healthCheckPath: /api/health
+    envVars:
+      - key: AI_ANALYSIS_PROVIDER
+        value: rules
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false

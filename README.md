@@ -18,7 +18,7 @@ UrbanCanvas is a 2D urban planning sandbox for sketching street changes on real 
 - Express, TypeScript, Postgres
 - Mapbox GL, Konva, Graphology
 - Clerk authentication
-- Railway Postgres/API hosting and Vercel frontend hosting
+- Vercel frontend hosting, Render API hosting, and Neon Postgres
 
 ## Local Setup
 
@@ -74,22 +74,30 @@ npm run start:api
 
 1. Create a Vercel project from this GitHub repo.
 2. Set:
-   - `NEXT_PUBLIC_API_URL=https://your-railway-api.up.railway.app`
+   - `NEXT_PUBLIC_API_URL=https://your-render-api.onrender.com`
    - `NEXT_PUBLIC_MAPBOX_TOKEN=...`
    - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...`
 3. Build command is configured in `vercel.json` as `npm run build:web`.
 
-### Backend on Railway
+### Database on Neon
 
-1. Create a Railway service from this GitHub repo.
-2. Add a Railway Postgres database and copy its `DATABASE_URL`.
+1. Create a free Neon project.
+2. Copy the pooled Postgres connection string.
+3. Use that connection string as `DATABASE_URL` in Render.
+
+### Backend on Render
+
+1. Create a Render Web Service from this GitHub repo.
+2. Choose the free instance type.
 3. Set:
    - `DATABASE_URL=...`
    - `FRONTEND_ORIGIN=https://your-vercel-app.vercel.app`
    - `CLERK_PUBLISHABLE_KEY=...`
    - `CLERK_SECRET_KEY=...`
    - `AI_ANALYSIS_PROVIDER=rules`
-4. `railway.json` builds the API with `npm run build:api`, starts it with `npm run start:api`, and health-checks `/api/health`.
+4. Use build command `npm ci && npm run build:api`.
+5. Use start command `npm run start:api`.
+6. Health check path is `/api/health`.
 
 ## Demo Flow
 
