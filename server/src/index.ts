@@ -23,12 +23,6 @@ app.use(
   })
 );
 app.use(express.json({ limit: "8mb" }));
-app.use(
-  clerkMiddleware({
-    publishableKey: clerkPublishableKey,
-    secretKey: process.env.CLERK_SECRET_KEY
-  })
-);
 
 app.get("/", (_req, res) => {
   res.json({
@@ -64,6 +58,13 @@ app.post("/api/osm", async (req, res) => {
     });
   }
 });
+
+app.use(
+  clerkMiddleware({
+    publishableKey: clerkPublishableKey,
+    secretKey: process.env.CLERK_SECRET_KEY
+  })
+);
 
 app.get("/api/projects", async (_req, res) => {
   try {
@@ -150,6 +151,7 @@ app.use((_req, res) => {
 
 app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   void next;
+  console.error("Unhandled API error", error);
 
   if (error && typeof error === "object" && "type" in error && error.type === "entity.too.large") {
     res.status(413).json({
