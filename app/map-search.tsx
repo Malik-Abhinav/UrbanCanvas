@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
@@ -143,11 +144,19 @@ export default function MapSearch() {
   const [changeAnalysis, setChangeAnalysis] = useState<ChangeAnalysis | null>(null);
   const [isAnalyzingChanges, setIsAnalyzingChanges] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
     setProjectObjects(objects);
   }, []);
+
+  useEffect(() => {
+    window.setTimeout(() => {
+      mapRef.current?.resize();
+      setMapRevision((current) => current + 1);
+    }, 260);
+  }, [isSidebarCollapsed]);
 
   const getProjectRequestHeaders = useCallback(async () => {
     const token = await getToken();
@@ -827,19 +836,27 @@ export default function MapSearch() {
   }
 
   return (
-    <main className="min-h-screen bg-[#111412] text-[#f7faf4]">
-      <div className="grid min-h-screen lg:grid-cols-[380px_1fr]">
-        <aside className="z-10 border-b border-white/10 bg-[#161a18] px-5 py-5 shadow-2xl lg:border-b-0 lg:border-r">
+    <main className="min-h-screen bg-[#0b0f12] text-[#f8fafc]">
+      <div
+        className={`grid min-h-screen transition-[grid-template-columns] duration-300 ease-out ${
+          isSidebarCollapsed ? "lg:grid-cols-[76px_1fr]" : "lg:grid-cols-[400px_1fr]"
+        }`}
+      >
+        <aside
+          className={`z-10 border-b border-white/10 bg-[#101820]/95 shadow-2xl backdrop-blur transition-all duration-300 lg:border-b-0 lg:border-r ${
+            isSidebarCollapsed ? "px-3 py-4" : "px-5 py-5"
+          }`}
+        >
           <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm font-semibold text-[#f5c542]">UrbanCanvas</p>
-              <h1 className="mt-2 text-3xl font-semibold leading-tight">Map workspace</h1>
+            <div className={isSidebarCollapsed ? "hidden" : "block"}>
+              <p className="text-sm font-semibold text-[#63e6be]">UrbanCanvas</p>
+              <h1 className="mt-2 text-3xl font-semibold leading-tight tracking-normal">Map workspace</h1>
             </div>
             <div className="flex items-center gap-2">
               <Show when="signed-out">
                 <SignInButton mode="modal">
                   <button
-                    className="rounded border border-white/15 px-2.5 py-1 text-xs font-semibold text-white/75 transition hover:border-[#f5c542]/50 hover:text-white"
+                    className={`secondary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
                     type="button"
                   >
                     Sign in
@@ -847,7 +864,7 @@ export default function MapSearch() {
                 </SignInButton>
                 <SignUpButton mode="modal">
                   <button
-                    className="rounded bg-[#f5c542] px-2.5 py-1 text-xs font-semibold text-[#111412] transition hover:bg-[#ffd85a]"
+                    className={`primary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
                     type="button"
                   >
                     Sign up
@@ -857,12 +874,23 @@ export default function MapSearch() {
               <Show when="signed-in">
                 <UserButton />
               </Show>
-              <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-                Final polish
-              </span>
+              <button
+                aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                className="icon-button"
+                onClick={() => setIsSidebarCollapsed((current) => !current)}
+                title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                type="button"
+              >
+                {isSidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              </button>
             </div>
           </div>
 
+          <div className={isSidebarCollapsed ? "mt-8 flex flex-col items-center gap-3" : "hidden"}>
+            <p className="vertical-brand text-[#63e6be]">UrbanCanvas</p>
+          </div>
+
+          <div className={isSidebarCollapsed ? "hidden" : "block"}>
           <form className="mt-8" onSubmit={handleSearch}>
             <label className="text-sm font-medium text-white/75" htmlFor="location-search">
               Search location
@@ -870,14 +898,14 @@ export default function MapSearch() {
             <div className="mt-2 flex gap-2">
               <input
                 id="location-search"
-                className="min-w-0 flex-1 rounded border border-white/15 bg-white px-3 py-2.5 text-sm text-[#111412] outline-none transition focus:border-[#f5c542] focus:ring-2 focus:ring-[#f5c542]/35"
+                className="field-input min-w-0 flex-1"
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Delhi"
                 type="search"
                 value={query}
               />
               <button
-                className="rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+                className="primary-button px-4 py-2.5 text-sm"
                 disabled={isSearching}
                 type="submit"
               >
@@ -900,10 +928,10 @@ export default function MapSearch() {
           <section className="mt-6 border-t border-white/10 pt-5">
             <div className="flex gap-2">
               <button
-                className={`flex-1 rounded px-4 py-2.5 text-sm font-semibold transition ${
+                className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                   isSelectingArea
-                    ? "bg-[#f5c542] text-[#111412] hover:bg-[#ffd85a]"
-                    : "border border-white/15 bg-white/[0.04] text-white hover:border-[#f5c542]/50 hover:bg-white/[0.08]"
+                    ? "bg-[#63e6be] text-[#06110e] shadow-[0_14px_35px_rgba(99,230,190,0.18)] hover:bg-[#7ff2cf]"
+                    : "border border-white/15 bg-white/[0.04] text-white hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
                 }`}
                 onClick={toggleAreaSelection}
                 type="button"
@@ -911,7 +939,7 @@ export default function MapSearch() {
                 {isSelectingArea ? "Selecting..." : "Select Area"}
               </button>
               <button
-                className="rounded border border-white/15 px-4 py-2.5 text-sm font-semibold text-white/75 transition hover:border-white/30 hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
+                className="secondary-button px-4 py-2.5 text-sm"
                 disabled={!selectedBounds}
                 onClick={clearSelection}
                 type="button"
@@ -927,7 +955,7 @@ export default function MapSearch() {
             ) : null}
 
             {selectedBounds ? (
-              <div className="mt-4 rounded border border-white/10 bg-white/[0.04] p-3">
+              <div className="info-panel mt-4 p-3">
                 <p className="text-xs font-semibold uppercase text-white/45">Selected bounds</p>
                 <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
                   <Coordinate label="North" value={selectedBounds.north} />
@@ -941,7 +969,7 @@ export default function MapSearch() {
                   </p>
                 ) : null}
                 <button
-                  className="mt-4 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+                  className="primary-button mt-4 w-full px-4 py-2.5 text-sm"
                   disabled={isAreaConfirmed}
                   onClick={confirmSelectedArea}
                   type="button"
@@ -958,7 +986,7 @@ export default function MapSearch() {
             ) : null}
 
             {osmData ? (
-              <div className="mt-4 rounded border border-white/10 bg-[#0d100f] p-3">
+              <div className="info-panel mt-4 p-3">
                 <p className="text-xs font-semibold uppercase text-white/45">OSM data stored</p>
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <Count label="Buildings" value={osmData.counts.buildings} />
@@ -973,7 +1001,7 @@ export default function MapSearch() {
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs font-semibold uppercase text-white/45">Projects</p>
               <button
-                className="rounded border border-white/15 px-2.5 py-1 text-xs font-semibold text-white/70 transition hover:border-[#f5c542]/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                className="secondary-button px-2.5 py-1 text-xs"
                 disabled={isLoadingProjects}
                 onClick={() => void fetchProjects()}
                 type="button"
@@ -986,13 +1014,13 @@ export default function MapSearch() {
               Project name
             </label>
             <input
-              className="mt-2 w-full rounded border border-white/15 bg-white px-3 py-2.5 text-sm text-[#111412] outline-none transition focus:border-[#f5c542] focus:ring-2 focus:ring-[#f5c542]/35"
+              className="field-input mt-2 w-full"
               id="project-name"
               onChange={(event) => setProjectName(event.target.value)}
               value={projectName}
             />
             <button
-              className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+              className="primary-button mt-3 w-full px-4 py-2.5 text-sm"
               disabled={isSavingProject || !isSignedIn || !isAreaConfirmed || !osmData}
               onClick={() => void saveCurrentProject()}
               type="button"
@@ -1020,10 +1048,10 @@ export default function MapSearch() {
               <div className="mt-4 space-y-2">
                 {projects.map((project) => (
                   <button
-                    className={`w-full rounded border px-3 py-3 text-left transition ${
+                    className={`w-full rounded-lg border px-3 py-3 text-left transition ${
                       currentProjectId === project.id
-                        ? "border-[#f5c542]/70 bg-[#f5c542]/10"
-                        : "border-white/10 bg-white/[0.04] hover:border-[#f5c542]/50 hover:bg-white/[0.08]"
+                        ? "border-[#63e6be]/70 bg-[#63e6be]/10"
+                        : "border-white/10 bg-white/[0.04] hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
                     }`}
                     key={project.id}
                     onClick={() => void loadProject(project.id)}
@@ -1046,10 +1074,12 @@ export default function MapSearch() {
           <section className="mt-6 border-t border-white/10 pt-5">
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs font-semibold uppercase text-white/45">Change analysis</p>
-              <span className="rounded border border-white/10 px-2 py-1 text-[11px] text-white/45">Rules</span>
+              <span className="rounded-md border border-[#63e6be]/20 bg-[#63e6be]/10 px-2 py-1 text-[11px] text-[#9ff5da]">
+                Rules
+              </span>
             </div>
             <button
-              className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
+              className="primary-button mt-3 w-full px-4 py-2.5 text-sm"
               disabled={isAnalyzingChanges || !isSignedIn || !isAreaConfirmed || !osmData}
               onClick={() => void analyzeCurrentChanges()}
               type="button"
@@ -1067,7 +1097,7 @@ export default function MapSearch() {
             ) : null}
 
             {changeAnalysis ? (
-              <div className="mt-4 space-y-3 rounded border border-white/10 bg-[#0d100f] p-3">
+              <div className="info-panel mt-4 space-y-3 p-3">
                 <p className="text-sm leading-6 text-white/80">{changeAnalysis.summary}</p>
                 <AnalysisList title="Safety observations" items={changeAnalysis.safetyObservations} />
                 <AnalysisList title="Pedestrian impact" items={changeAnalysis.pedestrianImpact} />
@@ -1085,7 +1115,7 @@ export default function MapSearch() {
               <div className="mt-3 space-y-2">
                 {results.map((result) => (
                   <button
-                    className="w-full rounded border border-white/10 bg-white/[0.04] px-3 py-3 text-left text-sm leading-5 text-white/80 transition hover:border-[#f5c542]/50 hover:bg-white/[0.08]"
+                    className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-left text-sm leading-5 text-white/80 transition hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
                     key={result.id}
                     onClick={() => flyToResult(result)}
                     type="button"
@@ -1100,9 +1130,10 @@ export default function MapSearch() {
           <div className="mt-8 border-t border-white/10 pt-5 text-sm leading-6 text-white/55">
             Confirm an area to freeze satellite imagery and place a transparent canvas over it.
           </div>
+          </div>
         </aside>
 
-        <section className="relative min-h-[62vh] overflow-hidden bg-[#0d100f] lg:min-h-screen">
+        <section className="relative min-h-[62vh] overflow-hidden bg-[#071114] lg:min-h-screen">
           <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
           {!isMapLoaded && !mapError ? (
             <div className="pointer-events-none absolute left-4 top-4 z-10">
