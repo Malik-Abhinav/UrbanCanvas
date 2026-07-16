@@ -107,7 +107,7 @@ type AnalysisResponse = {
 };
 
 export default function MapSearch() {
-  const { getToken } = useAuth();
+  const { getToken, isSignedIn } = useAuth();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
@@ -486,7 +486,7 @@ export default function MapSearch() {
           bbox: bounds
         })
       });
-      const payload = (await response.json()) as OsmResponse;
+      const payload = await readApiJson<OsmResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.data) {
         throw new Error(payload.message ?? "Unable to fetch map data.");
@@ -497,6 +497,9 @@ export default function MapSearch() {
       }
 
       setOsmData(payload.data);
+      if (payload.data.counts.roads === 0) {
+        setOsmError("No OSM roads were found in this selection. You can still draw, but snapping and graph analysis will be limited.");
+      }
     } catch (fetchError) {
       setOsmData(null);
       setOsmError(fetchError instanceof Error ? fetchError.message : "Unable to fetch map data.");
@@ -506,13 +509,20 @@ export default function MapSearch() {
   }
 
   const fetchProjects = useCallback(async () => {
+    if (!isSignedIn) {
+      setProjects([]);
+      setProjectMessage(null);
+      setIsLoadingProjects(false);
+      return;
+    }
+
     setIsLoadingProjects(true);
 
     try {
       const response = await fetch(`${apiUrl}/api/projects`, {
         headers: await getProjectRequestHeaders()
       });
-      const payload = (await response.json()) as ProjectsResponse;
+      const payload = await readApiJson<ProjectsResponse>(response);
 
       if (!response.ok || payload.status !== "ok") {
         throw new Error(payload.message ?? "Unable to load projects.");
@@ -524,7 +534,7 @@ export default function MapSearch() {
     } finally {
       setIsLoadingProjects(false);
     }
-  }, [getProjectRequestHeaders]);
+  }, [getProjectRequestHeaders, isSignedIn]);
 
   useEffect(() => {
     void fetchProjects();
@@ -567,7 +577,7 @@ export default function MapSearch() {
           userEdits: projectObjects
         })
       });
-      const payload = (await response.json()) as ProjectResponse;
+      const payload = await readApiJson<ProjectResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.project) {
         throw new Error(payload.message ?? "Unable to save project.");
@@ -598,7 +608,7 @@ export default function MapSearch() {
   );
 
   useEffect(() => {
-    if (!isAreaConfirmed || !osmData || !selectedBounds) {
+    if (!isSignedIn || !isAreaConfirmed || !osmData || !selectedBounds) {
       return;
     }
 
@@ -609,7 +619,7 @@ export default function MapSearch() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [isAreaConfirmed, osmData, projectName, projectObjects, saveCurrentProject, selectedBounds]);
+  }, [isAreaConfirmed, isSignedIn, osmData, projectName, projectObjects, saveCurrentProject, selectedBounds]);
 
   async function loadProject(id: string) {
     const map = mapRef.current;
@@ -624,7 +634,7 @@ export default function MapSearch() {
       const response = await fetch(`${apiUrl}/api/projects/${id}`, {
         headers: await getProjectRequestHeaders()
       });
-      const payload = (await response.json()) as ProjectResponse;
+      const payload = await readApiJson<ProjectResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.project) {
         throw new Error(payload.message ?? "Unable to load project.");
@@ -695,7 +705,7 @@ export default function MapSearch() {
           userEdits: projectObjects
         })
       });
-      const payload = (await response.json()) as AnalysisResponse;
+      const payload = await readApiJson<AnalysisResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.analysis) {
         throw new Error(payload.message ?? "Unable to analyze changes.");
@@ -848,7 +858,7 @@ export default function MapSearch() {
                 <UserButton />
               </Show>
               <span className="rounded border border-white/15 px-2.5 py-1 text-xs text-white/70">
-                Milestone 7
+                Final polish
               </span>
             </div>
           </div>
@@ -983,14 +993,16 @@ export default function MapSearch() {
             />
             <button
               className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isSavingProject || !isAreaConfirmed || !osmData}
+              disabled={isSavingProject || !isSignedIn || !isAreaConfirmed || !osmData}
               onClick={() => void saveCurrentProject()}
               type="button"
             >
               {isSavingProject ? "Saving" : currentProjectId ? "Save Changes" : "Save Project"}
             </button>
             <p className="mt-2 text-xs leading-5 text-white/45">
-              Auto-saves 2 minutes after the latest saved-area change.
+              {isSignedIn
+                ? "Auto-saves 2 minutes after the latest saved-area change."
+                : "Sign in to save and reload projects."}
             </p>
 
             {projectMessage ? (
@@ -999,7 +1011,12 @@ export default function MapSearch() {
               </p>
             ) : null}
 
-            {projects.length > 0 ? (
+            {isLoadingProjects ? (
+              <div className="mt-4 space-y-2">
+                <SidebarSkeleton />
+                <SidebarSkeleton />
+              </div>
+            ) : projects.length > 0 ? (
               <div className="mt-4 space-y-2">
                 {projects.map((project) => (
                   <button
@@ -1020,7 +1037,9 @@ export default function MapSearch() {
                 ))}
               </div>
             ) : (
-              <p className="mt-4 text-sm leading-6 text-white/45">No saved projects yet.</p>
+              <p className="mt-4 text-sm leading-6 text-white/45">
+                {isSignedIn ? "No saved projects yet." : "Saved projects appear here after sign-in."}
+              </p>
             )}
           </section>
 
@@ -1031,7 +1050,7 @@ export default function MapSearch() {
             </div>
             <button
               className="mt-3 w-full rounded bg-[#f5c542] px-4 py-2.5 text-sm font-semibold text-[#111412] transition hover:bg-[#ffd85a] disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isAnalyzingChanges || !isAreaConfirmed || !osmData}
+              disabled={isAnalyzingChanges || !isSignedIn || !isAreaConfirmed || !osmData}
               onClick={() => void analyzeCurrentChanges()}
               type="button"
             >
@@ -1171,6 +1190,18 @@ export default function MapSearch() {
   );
 }
 
+async function readApiJson<T>(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    return (await response.json()) as T;
+  }
+
+  const text = await response.text();
+  const message = text.trim() || `Request failed with status ${response.status}.`;
+  throw new Error(message.slice(0, 220));
+}
+
 function isOsmData(value: unknown): value is OsmData {
   if (!value || typeof value !== "object") {
     return false;
@@ -1220,6 +1251,15 @@ function Count({ label, value }: { label: string; value: number }) {
     <div className="rounded border border-white/10 bg-white/[0.04] px-2 py-2">
       <p className="text-[11px] text-white/45">{label}</p>
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
+    </div>
+  );
+}
+
+function SidebarSkeleton() {
+  return (
+    <div className="rounded border border-white/10 bg-white/[0.04] px-3 py-3">
+      <div className="h-4 w-2/3 rounded bg-white/10" />
+      <div className="mt-2 h-3 w-1/2 rounded bg-white/[0.07]" />
     </div>
   );
 }

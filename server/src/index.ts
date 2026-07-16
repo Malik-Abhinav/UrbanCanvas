@@ -9,13 +9,17 @@ import { getProject, listProjects, saveProject } from "./projects.js";
 
 const app = express();
 const port = Number(process.env.API_PORT ?? 3001);
-const frontendOrigin = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
+const frontendOrigins = (process.env.FRONTEND_ORIGIN ?? "http://localhost:3000")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 const clerkPublishableKey = process.env.CLERK_PUBLISHABLE_KEY ?? process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
+app.set("trust proxy", 1);
 app.use(
   cors({
     allowedHeaders: ["authorization", "content-type"],
-    origin: frontendOrigin
+    origin: frontendOrigins
   })
 );
 app.use(express.json({ limit: "8mb" }));
@@ -30,7 +34,8 @@ app.get("/", (_req, res) => {
   res.json({
     name: "UrbanCanvas API",
     status: "ok",
-    health: "/api/health"
+    health: "/api/health",
+    environment: process.env.NODE_ENV ?? "development"
   });
 });
 
@@ -134,6 +139,38 @@ app.post("/api/analyze", async (req, res) => {
       message: error instanceof Error ? error.message : "Unable to analyze changes"
     });
   }
+});
+
+app.use((_req, res) => {
+  res.status(404).json({
+    status: "error",
+    message: "API route not found"
+  });
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  void next;
+
+  if (error && typeof error === "object" && "type" in error && error.type === "entity.too.large") {
+    res.status(413).json({
+      status: "error",
+      message: "Request body is too large. Select a smaller area or reduce the number of edits."
+    });
+    return;
+  }
+
+  if (error instanceof SyntaxError) {
+    res.status(400).json({
+      status: "error",
+      message: "Request body must be valid JSON."
+    });
+    return;
+  }
+
+  res.status(500).json({
+    status: "error",
+    message: "Unexpected server error"
+  });
 });
 
 function getErrorStatus(error: unknown) {
