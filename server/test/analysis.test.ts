@@ -82,3 +82,35 @@ describe("analyzeProjectChanges", () => {
     expect(analysis.summary).toContain("1 crossing");
   });
 });
+
+
+describe("analyzeProjectChanges input hardening", () => {
+  it("rejects non-finite or negative OSM counts", () => {
+    const badCounts = (counts: Record<string, unknown>) =>
+      makeInput({
+        osmData: { ...makeOsmData(), counts: { ...makeOsmData().counts, ...counts } }
+      });
+
+    expect(() => analyzeProjectChanges(badCounts({ roads: Number.NaN }))).toThrow(/osmData/);
+    expect(() => analyzeProjectChanges(badCounts({ buildings: -3 }))).toThrow(/osmData/);
+    expect(() => analyzeProjectChanges(badCounts({ openLand: "many" }))).toThrow(/osmData/);
+  });
+
+  it("caps long project names instead of echoing arbitrary text", () => {
+    const analysis = analyzeProjectChanges(makeInput({ projectName: "x".repeat(500) }));
+
+    expect(analysis.summary.length).toBeLessThan(400);
+  });
+
+  it("rejects more than 500 edits", () => {
+    const edits = Array.from({ length: 501 }, (_, index) => ({ id: String(index), type: "signal" }));
+
+    expect(() => analyzeProjectChanges(makeInput({ userEdits: edits }))).toThrow(/500 drawing edits/);
+  });
+
+  it("treats a whitespace-only project name as unnamed", () => {
+    const analysis = analyzeProjectChanges(makeInput({ projectName: "   " }));
+
+    expect(analysis.summary.startsWith("This project")).toBe(true);
+  });
+});
