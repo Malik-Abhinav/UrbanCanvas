@@ -220,6 +220,9 @@ function describeCount(count: number, label: string) {
   return `${count} ${label}${count === 1 ? "" : "s"}`;
 }
 
+const maxProjectNameLength = 80;
+const maxUserEdits = 500;
+
 function parseAnalysisInput(input: unknown): AnalysisInput {
   if (!input || typeof input !== "object") {
     throw new Error("Request body must be an object.");
@@ -239,10 +242,24 @@ function parseAnalysisInput(input: unknown): AnalysisInput {
     throw new Error("Analysis userEdits must be an array.");
   }
 
+  if (body.userEdits.length > maxUserEdits) {
+    throw new Error(`Analysis supports at most ${maxUserEdits} drawing edits.`);
+  }
+
+  let projectName: string | undefined;
+
+  if (typeof body.projectName === "string") {
+    projectName = body.projectName.trim().slice(0, maxProjectNameLength);
+
+    if (projectName.length === 0) {
+      projectName = undefined;
+    }
+  }
+
   return {
     bbox: body.bbox,
     osmData: body.osmData,
-    projectName: typeof body.projectName === "string" ? body.projectName : undefined,
+    projectName,
     userEdits: body.userEdits.filter(isDrawingObject)
   };
 }
@@ -254,7 +271,22 @@ function isOsmData(value: unknown): value is OsmData {
 
   const data = value as Partial<OsmData>;
 
-  return Boolean(data.counts) && Array.isArray(data.roads) && Array.isArray(data.buildings) && Array.isArray(data.openLand);
+  if (!data.counts || !Array.isArray(data.roads) || !Array.isArray(data.buildings) || !Array.isArray(data.openLand)) {
+    return false;
+  }
+
+  // NaN/negative/garbage counts would leak into generated analysis text.
+  const counts = data.counts as Partial<OsmData["counts"]>;
+
+  return (
+    Number.isFinite(counts.roads) && (counts.roads as number) >= 0 &&
+    Number.isFinite(counts.buildings) && (counts.buildings as number) >= 0 &&
+    Number.isFinite(counts.openLand) && (isNonNegativeFinite(counts.openLand))
+  );
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return Number.isFinite(value) && (value as number) >= 0;
 }
 
 function isDrawingObject(value: unknown): value is DrawingObject {
