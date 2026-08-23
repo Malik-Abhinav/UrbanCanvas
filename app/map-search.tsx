@@ -876,12 +876,19 @@ export default function MapSearch() {
 
   return (
     <main className="min-h-screen bg-[#0b0f12] text-[#f8fafc]">
+      <a
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:border focus:border-[#63e6be] focus:bg-[#101820] focus:px-3 focus:py-2 focus:text-sm"
+        href="#map-canvas"
+      >
+        Skip to map canvas
+      </a>
       <div
         className={`grid min-h-screen transition-[grid-template-columns] duration-300 ease-out ${
           isSidebarCollapsed ? "lg:grid-cols-[76px_1fr]" : "lg:grid-cols-[400px_1fr]"
         }`}
       >
         <aside
+          aria-label="Map workspace controls"
           className={`z-10 border-b border-white/10 bg-[#101820]/95 shadow-2xl backdrop-blur transition-all duration-300 lg:border-b-0 lg:border-r ${
             isSidebarCollapsed ? "px-3 py-4" : "px-5 py-5"
           }`}
@@ -954,7 +961,7 @@ export default function MapSearch() {
           </form>
 
           {error ? (
-            <p className="mt-4 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]">
+            <p className="mt-4 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]" role="alert">
               {error}
             </p>
           ) : null}
@@ -967,6 +974,7 @@ export default function MapSearch() {
           <section className="mt-6 border-t border-white/10 pt-5">
             <div className="flex gap-2">
               <button
+                aria-pressed={isSelectingArea}
                 className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                   isSelectingArea
                     ? "bg-[#63e6be] text-[#06110e] shadow-[0_14px_35px_rgba(99,230,190,0.18)] hover:bg-[#7ff2cf]"
@@ -988,7 +996,7 @@ export default function MapSearch() {
             </div>
 
             {selectionError ? (
-              <p className="mt-3 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]">
+              <p className="mt-3 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]" role="alert">
                 {selectionError}
               </p>
             ) : null}
@@ -1019,7 +1027,7 @@ export default function MapSearch() {
             ) : null}
 
             {osmError ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
                 {osmError}
               </p>
             ) : null}
@@ -1073,13 +1081,13 @@ export default function MapSearch() {
             </p>
 
             {projectMessage ? (
-              <p className="mt-3 rounded border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-6 text-white/70">
+              <p aria-live="polite" className="mt-3 rounded border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-6 text-white/70">
                 {projectMessage}
               </p>
             ) : null}
 
             {projectDeleteError ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
                 {projectDeleteError}
               </p>
             ) : null}
@@ -1150,7 +1158,7 @@ export default function MapSearch() {
             </p>
 
             {analysisMessage ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
                 {analysisMessage}
               </p>
             ) : null}
@@ -1192,11 +1200,15 @@ export default function MapSearch() {
           </div>
         </aside>
 
-        <section className="relative min-h-[62vh] overflow-hidden bg-[#071114] lg:min-h-screen">
+        <section
+          aria-label="Map canvas"
+          className="relative min-h-[62vh] overflow-hidden bg-[#071114] lg:min-h-screen"
+          id="map-canvas"
+        >
           <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
           {!isMapLoaded && !mapError ? (
             <div className="pointer-events-none absolute left-4 top-4 z-10">
-              <div className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
+              <div aria-live="polite" className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
                 Loading satellite map...
               </div>
             </div>
@@ -1204,7 +1216,7 @@ export default function MapSearch() {
           {mapError ? (
             <div className="absolute inset-0 flex items-center justify-center bg-[#0d100f] p-6">
               <div className="max-w-md rounded border border-[#ff6b57]/30 bg-[#161a18] p-5 shadow-2xl">
-                <h2 className="text-lg font-semibold text-[#ffd1ca]">Map failed to load</h2>
+                <h2 role="alert" className="text-lg font-semibold text-[#ffd1ca]">Map failed to load</h2>
                 <p className="mt-3 text-sm leading-6 text-white/70">{mapError}</p>
               </div>
             </div>

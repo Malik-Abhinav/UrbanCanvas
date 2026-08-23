@@ -605,6 +605,7 @@ export default function SatelliteOverlay({
         {tools.map(({ Icon, id, label }) => (
           <button
             aria-label={label}
+            aria-pressed={activeTool === id}
             className={`flex h-10 w-10 items-center justify-center rounded border transition ${
               activeTool === id
                 ? "border-[#f5c542] bg-[#f5c542] text-[#101311]"
@@ -734,7 +735,7 @@ export default function SatelliteOverlay({
               <AnalysisStat label="Edges" value={graphAnalysis.graph.edgeCount} />
               <AnalysisStat label="Dead ends" value={graphAnalysis.deadEndNodes.length} />
             </div>
-            <p className="mt-2 text-[11px] leading-4 text-white/65">{analysisMessage}</p>
+            <p aria-live="polite" className="mt-2 text-[11px] leading-4 text-white/65">{analysisMessage}</p>
             <p className="mt-1 text-[10px] leading-4 text-white/40">Based on OSM tags and drawn sidewalks.</p>
             {analysisPath ? (
               <button
