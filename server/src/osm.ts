@@ -1,9 +1,7 @@
-export type BoundingBox = {
-  north: number;
-  south: number;
-  east: number;
-  west: number;
-};
+import type { BoundingBox } from "./bbox.js";
+import { getApproximateAreaKm2, isBoundingBox } from "./bbox.js";
+
+export type { BoundingBox };
 
 type OverpassElement = {
   type: string;
@@ -174,9 +172,7 @@ function validateBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
     throw new Error("Request body must include bbox with north, south, east, and west numbers.");
   }
 
-  const values = [bbox.north, bbox.south, bbox.east, bbox.west];
-
-  if (values.some((value) => !Number.isFinite(value))) {
+  if ([bbox.north, bbox.south, bbox.east, bbox.west].some((value) => !Number.isFinite(value))) {
     throw new Error("Bounding box coordinates must be finite numbers.");
   }
 
@@ -192,31 +188,6 @@ function validateBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
   if (areaKm2 > maxAreaKm2) {
     throw new Error(`Select a smaller area. Keep it under ${maxAreaKm2} km2 for now.`);
   }
-}
-
-function isBoundingBox(value: unknown): value is BoundingBox {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const bbox = value as Record<string, unknown>;
-
-  return (
-    typeof bbox.north === "number" &&
-    typeof bbox.south === "number" &&
-    typeof bbox.east === "number" &&
-    typeof bbox.west === "number"
-  );
-}
-
-function getApproximateAreaKm2(bounds: BoundingBox) {
-  const centerLatitude = ((bounds.north + bounds.south) / 2) * (Math.PI / 180);
-  const kmPerLatitudeDegree = 111.32;
-  const kmPerLongitudeDegree = 111.32 * Math.cos(centerLatitude);
-  const heightKm = Math.abs(bounds.north - bounds.south) * kmPerLatitudeDegree;
-  const widthKm = Math.abs(bounds.east - bounds.west) * kmPerLongitudeDegree;
-
-  return widthKm * heightKm;
 }
 
 function getOverpassErrorMessage(status: number, body: string) {
