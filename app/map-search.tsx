@@ -149,6 +149,7 @@ export default function MapSearch() {
   const [error, setError] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
+  const [lastAutoSaveFailed, setLastAutoSaveFailed] = useState(false);
 
   const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
     setProjectObjects(objects);
@@ -360,6 +361,7 @@ export default function MapSearch() {
     setOsmError(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
+    setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
     setProjectObjects([]);
     setLoadedProjectObjects([]);
@@ -437,6 +439,7 @@ export default function MapSearch() {
     setOsmError(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
+    setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
     setProjectObjects([]);
     setLoadedProjectObjects([]);
@@ -564,7 +567,7 @@ export default function MapSearch() {
     const signature = getProjectSaveSignature({
       bbox: selectedBounds,
       name: projectName,
-      osmData,
+      osmDataId: getOsmDataId(osmData),
       userEdits: projectObjects
     });
 
@@ -600,6 +603,7 @@ export default function MapSearch() {
       lastSavedSignatureRef.current = signature;
 
       if (silent) {
+        setLastAutoSaveFailed(false);
         setProjectMessage(`Auto-saved ${formatProjectDate(new Date().toISOString())}.`);
       } else {
         setProjectMessage("Project saved.");
@@ -609,7 +613,14 @@ export default function MapSearch() {
         await fetchProjects();
       }
     } catch (saveError) {
-      setProjectMessage(saveError instanceof Error ? saveError.message : "Unable to save project.");
+      const message = saveError instanceof Error ? saveError.message : "Unable to save project.";
+
+      if (silent) {
+        setLastAutoSaveFailed(true);
+        setProjectMessage(`Auto-save failed: ${message}`);
+      } else {
+        setProjectMessage(message);
+      }
     } finally {
       if (!silent) {
         setIsSavingProject(false);
@@ -703,10 +714,11 @@ export default function MapSearch() {
       setProjectObjectsRevision((current) => current + 1);
       setChangeAnalysis(null);
       setAnalysisMessage(null);
+      setLastAutoSaveFailed(false);
       lastSavedSignatureRef.current = getProjectSaveSignature({
         bbox: project.bbox,
         name: project.name,
-        osmData: project.osm_data,
+        osmDataId: getOsmDataId(project.osm_data),
         userEdits: project.user_edits
       });
       disableMapInteractions(map);
@@ -1072,11 +1084,13 @@ export default function MapSearch() {
               onClick={() => void saveCurrentProject()}
               type="button"
             >
-              {isSavingProject ? "Saving" : currentProjectId ? "Save Changes" : "Save Project"}
+              {isSavingProject ? "Saving" : lastAutoSaveFailed ? "Retry Save" : currentProjectId ? "Save Changes" : "Save Project"}
             </button>
-            <p className="mt-2 text-xs leading-5 text-white/45">
+            <p aria-live="polite" className="mt-2 text-xs leading-5 text-white/45">
               {isSignedIn
-                ? "Auto-saves 2 minutes after the latest saved-area change."
+                ? lastAutoSaveFailed
+                  ? "The last auto-save did not go through. Press Retry Save."
+                  : "Auto-saves 2 minutes after the latest saved-area change."
                 : "Sign in to save and reload projects."}
             </p>
 
@@ -1391,20 +1405,32 @@ function formatProjectDate(value: string) {
 function getProjectSaveSignature({
   bbox,
   name,
-  osmData,
+  osmDataId,
   userEdits
 }: {
   bbox: BoundingBox;
   name: string;
-  osmData: OsmData;
+  osmDataId: string;
   userEdits: DrawingObject[];
 }) {
-  return JSON.stringify({
-    bbox,
+  // The OSM payload is immutable once fetched for a selection, so its
+  // identity (bbox + counts) stands in for hashing megabytes of geometry.
+  return [
+    bbox.north,
+    bbox.south,
+    bbox.east,
+    bbox.west,
     name,
-    osmData,
-    userEdits
-  });
+    osmDataId,
+    userEdits.length,
+    userEdits.map((object) => object.id).join(",")
+  ].join("|");
+}
+
+function getOsmDataId(osmData: OsmData) {
+  const { bbox, counts } = osmData;
+
+  return [bbox.north, bbox.south, bbox.east, bbox.west, counts.buildings, counts.roads, counts.openLand].join(":");
 }
 
 function getOverlayBoxFromBounds(map: Map, bounds: BoundingBox): OverlayBox {
