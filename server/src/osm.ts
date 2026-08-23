@@ -32,12 +32,13 @@ type OsmFeature = {
 
 const overpassUrl = "https://overpass-api.de/api/interpreter";
 const maxAreaKm2 = 5;
+const requestTimeoutMs = 40_000;
 
 export async function fetchOsmData(bbox: unknown) {
   validateBoundingBox(bbox);
 
   const query = buildOverpassQuery(bbox);
-  const response = await fetch(overpassUrl, {
+  const response = await fetchWithTimeout(overpassUrl, {
     method: "POST",
     headers: {
       "content-type": "text/plain;charset=UTF-8",
@@ -52,13 +53,48 @@ export async function fetchOsmData(bbox: unknown) {
     throw new Error(getOverpassErrorMessage(response.status, text));
   }
 
-  const data = JSON.parse(text) as OverpassResponse;
+  const data = parseOverpassJson(text);
 
   if (data.remark) {
     throw new Error(data.remark);
   }
 
   return parseOverpassResponse(data, bbox);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(
+        "Overpass took too long to respond. Try a smaller area, then try again."
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function parseOverpassJson(text: string): OverpassResponse {
+  try {
+    const data = JSON.parse(text) as unknown;
+
+    if (!data || typeof data !== "object" || !Array.isArray((data as OverpassResponse).elements)) {
+      throw new Error("bad shape");
+    }
+
+    return data as OverpassResponse;
+  } catch {
+    throw new Error(
+      "Overpass returned an unexpected response. Try again in a moment, or pick a smaller area."
+    );
+  }
 }
 
 function buildOverpassQuery({ north, south, east, west }: BoundingBox) {
