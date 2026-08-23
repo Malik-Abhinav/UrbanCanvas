@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.js";
-import type { BoundingBox } from "./osm.js";
+import type { BoundingBox } from "./bbox.js";
+import { getApproximateAreaKm2, isBoundingBox } from "./bbox.js";
 
 type ProjectRow = {
   bbox: BoundingBox;
@@ -14,6 +15,11 @@ type ProjectStateRow = ProjectRow & {
   osm_data: unknown;
   user_edits: unknown;
 };
+
+const maxProjectNameLength = 80;
+const maxUserEdits = 500;
+const maxProjectAreaKm2 = 5;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function listProjects(userId: string) {
   assertDatabase();
@@ -37,6 +43,7 @@ export async function getProject(id: string, userId: string) {
   assertDatabase();
   await ensureProjectSchema();
   await ensureUser(userId);
+  assertProjectId(id);
 
   const result = await pool!.query<ProjectStateRow>(
     `
@@ -105,6 +112,25 @@ export async function saveProject(input: unknown, userId: string) {
   return getProject(id, userId);
 }
 
+export async function deleteProject(id: string, userId: string) {
+  assertDatabase();
+  await ensureProjectSchema();
+  await ensureUser(userId);
+  assertProjectId(id);
+
+  const result = await pool!.query(
+    `
+      delete from projects
+      where id = $1 and user_id = $2
+    `,
+    [id, userId]
+  );
+
+  // project_state rows cascade; rowCount 0 means the project did not exist
+  // for this user (or at all).
+  return (result.rowCount ?? 0) > 0;
+}
+
 async function ensureProjectSchema() {
   await pool!.query(`
     create table if not exists users (
@@ -158,9 +184,11 @@ function parseProjectInput(input: unknown) {
     throw new Error("Project name is required.");
   }
 
-  if (!isBoundingBox(body.bbox)) {
-    throw new Error("Project bbox must include north, south, east, and west numbers.");
+  if (name.length > maxProjectNameLength) {
+    throw new Error(`Project name must be ${maxProjectNameLength} characters or fewer.`);
   }
+
+  validateProjectBoundingBox(body.bbox);
 
   if (!body.osmData || typeof body.osmData !== "object") {
     throw new Error("Project osmData is required.");
@@ -170,28 +198,53 @@ function parseProjectInput(input: unknown) {
     throw new Error("Project userEdits must be an array.");
   }
 
+  if (body.userEdits.length > maxUserEdits) {
+    throw new Error(`Projects are limited to ${maxUserEdits} drawing edits.`);
+  }
+
   return {
-    bbox: body.bbox,
-    id: typeof body.id === "string" && body.id ? body.id : null,
+    bbox: body.bbox as BoundingBox,
+    id: parseProjectId(body.id),
     name,
     osmData: body.osmData,
     userEdits: body.userEdits
   };
 }
 
-function isBoundingBox(value: unknown): value is BoundingBox {
-  if (!value || typeof value !== "object") {
-    return false;
+function parseProjectId(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return null;
   }
 
-  const bbox = value as Record<string, unknown>;
+  if (typeof value !== "string" || !uuidPattern.test(value)) {
+    throw new Error("Project id must be a valid UUID.");
+  }
 
-  return (
-    typeof bbox.north === "number" &&
-    typeof bbox.south === "number" &&
-    typeof bbox.east === "number" &&
-    typeof bbox.west === "number"
-  );
+  return value.toLowerCase();
+}
+
+function validateProjectBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
+  if (!isBoundingBox(bbox)) {
+    throw new Error("Project bbox must include north, south, east, and west numbers.");
+  }
+
+  if (![bbox.north, bbox.south, bbox.east, bbox.west].every(Number.isFinite)) {
+    throw new Error("Bounding box coordinates must be finite numbers.");
+  }
+
+  if (bbox.south >= bbox.north || bbox.west >= bbox.east) {
+    throw new Error("Bounding box coordinates are invalid.");
+  }
+
+  if (getApproximateAreaKm2(bbox) > maxProjectAreaKm2) {
+    throw new Error(`Selected area exceeds the ${maxProjectAreaKm2} km2 limit.`);
+  }
+}
+
+function assertProjectId(id: string) {
+  if (!uuidPattern.test(id)) {
+    throw new Error("Project id must be a valid UUID.");
+  }
 }
 
 function assertDatabase() {

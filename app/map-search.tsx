@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
@@ -146,6 +146,8 @@ export default function MapSearch() {
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
+  const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
 
   const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
     setProjectObjects(objects);
@@ -630,6 +632,42 @@ export default function MapSearch() {
     };
   }, [isAreaConfirmed, isSignedIn, osmData, projectName, projectObjects, saveCurrentProject, selectedBounds]);
 
+  const deleteProject = useCallback(
+    async (id: string) => {
+      setProjectDeleteError(null);
+
+      if (!window.confirm("Delete this saved project? This cannot be undone.")) {
+        return;
+      }
+
+      setDeletingProjectId(id);
+
+      try {
+        const response = await fetch(`${apiUrl}/api/projects/${id}`, {
+          method: "DELETE",
+          headers: await getProjectRequestHeaders()
+        });
+        const payload = await readApiJson<{ status: "ok" | "error"; message?: string }>(response);
+
+        if (!response.ok || payload.status !== "ok") {
+          throw new Error(payload.message ?? "Unable to delete project.");
+        }
+
+        if (currentProjectId === id) {
+          clearSelection();
+        }
+
+        setProjects((current) => current.filter((project) => project.id !== id));
+        setProjectMessage("Project deleted.");
+      } catch (deleteError) {
+        setProjectDeleteError(deleteError instanceof Error ? deleteError.message : "Unable to delete project.");
+      } finally {
+        setDeletingProjectId(null);
+      }
+    },
+    [currentProjectId, getProjectRequestHeaders]
+  );
+
   async function loadProject(id: string) {
     const map = mapRef.current;
     if (!map) {
@@ -1039,6 +1077,12 @@ export default function MapSearch() {
               </p>
             ) : null}
 
+            {projectDeleteError ? (
+              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]">
+                {projectDeleteError}
+              </p>
+            ) : null}
+
             {isLoadingProjects ? (
               <div className="mt-4 space-y-2">
                 <SidebarSkeleton />
@@ -1047,21 +1091,35 @@ export default function MapSearch() {
             ) : projects.length > 0 ? (
               <div className="mt-4 space-y-2">
                 {projects.map((project) => (
-                  <button
-                    className={`w-full rounded-lg border px-3 py-3 text-left transition ${
+                  <div
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-3 transition ${
                       currentProjectId === project.id
                         ? "border-[#63e6be]/70 bg-[#63e6be]/10"
-                        : "border-white/10 bg-white/[0.04] hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
+                        : "border-white/10 bg-white/[0.04]"
                     }`}
                     key={project.id}
-                    onClick={() => void loadProject(project.id)}
-                    type="button"
                   >
-                    <span className="block text-sm font-semibold text-white/85">{project.name}</span>
-                    <span className="mt-1 block text-xs text-white/45">
-                      Updated {formatProjectDate(project.updated_at)}
-                    </span>
-                  </button>
+                    <button
+                      className="min-w-0 flex-1 text-left"
+                      onClick={() => void loadProject(project.id)}
+                      type="button"
+                    >
+                      <span className="block truncate text-sm font-semibold text-white/85">{project.name}</span>
+                      <span className="mt-1 block text-xs text-white/45">
+                        Updated {formatProjectDate(project.updated_at)}
+                      </span>
+                    </button>
+                    <button
+                      aria-label={`Delete project ${project.name}`}
+                      className="icon-button shrink-0 hover:border-[#ff6b57]/60 hover:text-[#ffd1ca]"
+                      disabled={deletingProjectId !== null}
+                      onClick={() => void deleteProject(project.id)}
+                      title="Delete project"
+                      type="button"
+                    >
+                      {deletingProjectId === project.id ? "…" : <Trash2 size={15} />}
+                    </button>
+                  </div>
                 ))}
               </div>
             ) : (

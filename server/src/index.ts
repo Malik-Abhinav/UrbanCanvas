@@ -5,7 +5,7 @@ import express from "express";
 import { analyzeProjectChanges } from "./analysis.js";
 import { checkDatabase } from "./db.js";
 import { fetchOsmData } from "./osm.js";
-import { getProject, listProjects, saveProject } from "./projects.js";
+import { deleteProject, getProject, listProjects, saveProject } from "./projects.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? process.env.API_PORT ?? 3001);
@@ -121,6 +121,30 @@ app.post("/api/projects", async (req, res) => {
     res.status(getErrorStatus(error)).json({
       status: "error",
       message: error instanceof Error ? error.message : "Unable to save project"
+    });
+  }
+});
+
+app.delete("/api/projects/:id", async (req, res) => {
+  try {
+    const userId = getRequiredUserId(req);
+    const deleted = await deleteProject(req.params.id, userId);
+
+    if (!deleted) {
+      res.status(404).json({
+        status: "error",
+        message: "Project not found"
+      });
+      return;
+    }
+
+    res.json({
+      status: "ok"
+    });
+  } catch (error) {
+    res.status(getErrorStatus(error)).json({
+      status: "error",
+      message: error instanceof Error ? error.message : "Unable to delete project"
     });
   }
 });
