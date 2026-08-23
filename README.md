@@ -53,7 +53,7 @@ UrbanCanvas is a web-based urban planning sandbox for selecting a real location,
   - Clerk-authenticated users can save projects.
   - Saved projects include selected bounds, OSM data, and user edits.
   - Projects are scoped to the signed-in Clerk user.
-  - Supports manual save and timed auto-save.
+  - Supports manual save, timed auto-save with retry on failure, and project deletion.
 
 - **Rule-based change analysis**
   - Analyze user edits without paid AI credits.
@@ -174,6 +174,7 @@ Open:
 | `CLERK_PUBLISHABLE_KEY` | Yes | Clerk publishable key used by the Express Clerk middleware. |
 | `CLERK_SECRET_KEY` | Yes | Clerk secret key used by authenticated API routes. |
 | `AI_ANALYSIS_PROVIDER` | Yes | Set to `rules` for the local rule-based analyzer. |
+| `OSM_RATE_LIMIT` | No | Max anonymous `/api/osm` requests per client IP per minute. Defaults to `10`. |
 | `API_PORT` | Local only | Optional local API port. Defaults to `3001`. Render provides `PORT` automatically. |
 
 Example local values:
@@ -199,6 +200,7 @@ AI_ANALYSIS_PROVIDER=rules
 | `npm run dev:web` | Run only the Next.js app on port 3000. |
 | `npm run dev:api` | Run only the Express API with `tsx watch`. |
 | `npm run lint` | Run ESLint. |
+| `npm run test` | Run the vitest suite (server modules, drawing history, geometry). |
 | `npm run typecheck` | Type-check frontend and backend TypeScript. |
 | `npm run build` | Build frontend and backend. |
 | `npm run build:web` | Build only the Next.js frontend. |
