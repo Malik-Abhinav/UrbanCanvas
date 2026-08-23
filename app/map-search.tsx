@@ -7,6 +7,7 @@ import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 import { PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
+import { apiFetch } from "./api-fetch";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
 
@@ -488,7 +489,7 @@ export default function MapSearch() {
     setOsmError(null);
 
     try {
-      const response = await fetch(`${apiUrl}/api/osm`, {
+      const response = await apiFetch(`${apiUrl}/api/osm`, {
         method: "POST",
         headers: {
           "content-type": "application/json"
@@ -530,7 +531,7 @@ export default function MapSearch() {
     setIsLoadingProjects(true);
 
     try {
-      const response = await fetch(`${apiUrl}/api/projects`, {
+      const response = await apiFetch(`${apiUrl}/api/projects`, {
         headers: await getProjectRequestHeaders()
       });
       const payload = await readApiJson<ProjectsResponse>(response);
@@ -577,7 +578,7 @@ export default function MapSearch() {
     }
 
     try {
-      const response = await fetch(`${apiUrl}/api/projects`, {
+      const response = await apiFetch(`${apiUrl}/api/projects`, {
         method: "POST",
         headers: await getProjectRequestHeaders(),
         body: JSON.stringify({
@@ -643,7 +644,7 @@ export default function MapSearch() {
       setDeletingProjectId(id);
 
       try {
-        const response = await fetch(`${apiUrl}/api/projects/${id}`, {
+        const response = await apiFetch(`${apiUrl}/api/projects/${id}`, {
           method: "DELETE",
           headers: await getProjectRequestHeaders()
         });
@@ -678,7 +679,7 @@ export default function MapSearch() {
     setProjectMessage(null);
 
     try {
-      const response = await fetch(`${apiUrl}/api/projects/${id}`, {
+      const response = await apiFetch(`${apiUrl}/api/projects/${id}`, {
         headers: await getProjectRequestHeaders()
       });
       const payload = await readApiJson<ProjectResponse>(response);
@@ -742,7 +743,7 @@ export default function MapSearch() {
     setAnalysisMessage(null);
 
     try {
-      const response = await fetch(`${apiUrl}/api/analyze`, {
+      const response = await apiFetch(`${apiUrl}/api/analyze`, {
         method: "POST",
         headers: await getProjectRequestHeaders(),
         body: JSON.stringify({
