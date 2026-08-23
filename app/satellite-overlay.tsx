@@ -2,7 +2,7 @@
 
 import { UndirectedGraph } from "graphology";
 import { dijkstra } from "graphology-shortest-path";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
 import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
 import type Konva from "konva";
@@ -22,6 +22,19 @@ import {
   ZoomIn,
   ZoomOut
 } from "lucide-react";
+import {
+  canRedo,
+  canUndo,
+  emptyHistoryState,
+  historyReducer
+} from "./drawing-history";
+import {
+  getClosestPointOnSegment,
+  getDistance,
+  getMapDistanceMeters,
+  interpolateMapPoint,
+  normalizePoint
+} from "./canvas-geometry";
 
 type SatelliteOverlayProps = {
   height: number;
@@ -225,8 +238,8 @@ export default function SatelliteOverlay({
   const panLastPointRef = useRef<Point | null>(null);
   const [activeTool, setActiveTool] = useState<Tool>("select");
   const [hoveredTool, setHoveredTool] = useState<Tool | null>(null);
-  const [objects, setObjects] = useState<DrawingObject[]>([]);
-  const [redoStack, setRedoStack] = useState<DrawingObject[]>([]);
+  const [history, dispatchHistory] = useReducer(historyReducer, emptyHistoryState);
+  const objects = history.present;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [draftEnd, setDraftEnd] = useState<Point | null>(null);
@@ -312,8 +325,7 @@ export default function SatelliteOverlay({
   }, [initialObjects]);
 
   useEffect(() => {
-    setObjects(initialObjectsRef.current);
-    setRedoStack([]);
+    dispatchHistory({ objects: initialObjectsRef.current, type: "replace-all" });
     setSelectedId(null);
     setDraftStart(null);
     setDraftEnd(null);
@@ -459,45 +471,30 @@ export default function SatelliteOverlay({
   }
 
   function pushObject(object: DrawingObject) {
-    setObjects((current) => [...current, object]);
-    setRedoStack([]);
+    dispatchHistory({ object, type: "add" });
     setSelectedId(object.id);
   }
 
   function removeObject(id: string) {
-    setObjects((current) => current.filter((object) => object.id !== id));
+    dispatchHistory({ id, type: "remove" });
     setSelectedId((current) => (current === id ? null : current));
-    setRedoStack([]);
   }
 
   function undo() {
-    setObjects((current) => {
-      const removed = current.at(-1);
-      if (!removed) {
-        return current;
-      }
-
-      setRedoStack((redo) => [...redo, removed]);
-      setSelectedId(null);
-
-      return current.slice(0, -1);
-    });
+    dispatchHistory({ type: "undo" });
+    setSelectedId(null);
     setDraftStart(null);
     setDraftEnd(null);
   }
 
   function redo() {
-    setRedoStack((current) => {
-      const restored = current.at(-1);
-      if (!restored) {
-        return current;
-      }
+    const restored = history.future[0]?.at(-1);
 
-      setObjects((objects) => [...objects, restored]);
+    dispatchHistory({ type: "redo" });
+
+    if (restored) {
       setSelectedId(restored.id);
-
-      return current.slice(0, -1);
-    });
+    }
   }
 
   function handleObjectClick(event: Konva.KonvaEventObject<MouseEvent>, id: string) {
@@ -512,6 +509,13 @@ export default function SatelliteOverlay({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      panLastPointRef.current = null;
+      redo();
+      return;
+    }
+
     if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z") {
       event.preventDefault();
       panLastPointRef.current = null;
@@ -625,7 +629,7 @@ export default function SatelliteOverlay({
         <button
           aria-label="Undo"
           className="flex h-10 w-10 items-center justify-center rounded border border-white/15 bg-white/10 text-white transition hover:border-[#f5c542]/70 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={objects.length === 0}
+          disabled={!canUndo(history)}
           onClick={undo}
           title="Undo"
           type="button"
@@ -635,7 +639,7 @@ export default function SatelliteOverlay({
         <button
           aria-label="Redo"
           className="flex h-10 w-10 items-center justify-center rounded border border-white/15 bg-white/10 text-white transition hover:border-[#f5c542]/70 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={redoStack.length === 0}
+          disabled={!canRedo(history)}
           onClick={redo}
           title="Redo"
           type="button"
@@ -1394,24 +1398,6 @@ function getGraphNodeId(point: MapPoint) {
   return `${point.lat.toFixed(6)},${point.lng.toFixed(6)}`;
 }
 
-function getMapDistanceMeters(start: MapPoint, end: MapPoint) {
-  const earthRadiusMeters = 6371000;
-  const startLat = toRadians(start.lat);
-  const endLat = toRadians(end.lat);
-  const deltaLat = toRadians(end.lat - start.lat);
-  const deltaLng = toRadians(end.lng - start.lng);
-  const a =
-    Math.sin(deltaLat / 2) ** 2 +
-    Math.cos(startLat) * Math.cos(endLat) * Math.sin(deltaLng / 2) ** 2;
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-  return earthRadiusMeters * c;
-}
-
-function toRadians(value: number) {
-  return (value * Math.PI) / 180;
-}
-
 function roadImpliesSidewalk(road: OsmRoad) {
   const sidewalkTag = road.tags?.sidewalk;
 
@@ -1577,54 +1563,10 @@ function getSegmentMetrics(start: Point, end: Point) {
   };
 }
 
-function getClosestPointOnSegment(point: Point, start: Point, end: Point) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  const t =
-    lengthSquared === 0
-      ? 0
-      : Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
-  const closest = {
-    x: start.x + dx * t,
-    y: start.y + dy * t
-  };
-
-  return {
-    distance: getDistance(point, closest),
-    point: closest,
-    t
-  };
-}
-
-function interpolateMapPoint(start: MapPoint, end: MapPoint, t: number): MapPoint {
-  return {
-    lat: start.lat + (end.lat - start.lat) * t,
-    lng: start.lng + (end.lng - start.lng) * t
-  };
-}
-
 function getMidpoint(start: Point, end: Point): Point {
   return {
     x: (start.x + end.x) / 2,
     y: (start.y + end.y) / 2
-  };
-}
-
-function getDistance(start: Point, end: Point) {
-  return Math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2);
-}
-
-function normalizePoint(point: Point): Point {
-  const length = Math.sqrt(point.x * point.x + point.y * point.y);
-
-  if (length === 0) {
-    return { x: 1, y: 0 };
-  }
-
-  return {
-    x: point.x / length,
-    y: point.y / length
   };
 }
 
