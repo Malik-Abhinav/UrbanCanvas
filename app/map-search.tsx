@@ -714,6 +714,11 @@ export default function MapSearch() {
       }
 
       const project = payload.project;
+
+      if (!isProjectDetail(project)) {
+        throw new Error("Saved project data is incomplete or corrupted.");
+      }
+
       setCurrentProjectId(project.id);
       setProjectName(project.name);
       setSelectedBounds(project.bbox);
@@ -1346,6 +1351,49 @@ function isOsmData(value: unknown): value is OsmData {
     Boolean(data.bbox) &&
     Boolean(data.counts)
   );
+}
+
+function isProjectDetail(value: unknown): value is ProjectDetail {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const project = value as Partial<ProjectDetail>;
+
+  return (
+    typeof project.id === "string" &&
+    typeof project.name === "string" &&
+    Boolean(project.bbox) &&
+    isBoundingBoxValue(project.bbox) &&
+    isOsmData(project.osm_data) &&
+    Array.isArray(project.user_edits) &&
+    project.user_edits.every(isDrawingObjectValue)
+  );
+}
+
+function isBoundingBoxValue(value: unknown): value is BoundingBox {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const bbox = value as Partial<BoundingBox>;
+
+  return (
+    typeof bbox.north === "number" &&
+    typeof bbox.south === "number" &&
+    typeof bbox.east === "number" &&
+    typeof bbox.west === "number"
+  );
+}
+
+function isDrawingObjectValue(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const object = value as { id?: unknown; type?: unknown };
+
+  return typeof object.id === "string" && typeof object.type === "string";
 }
 
 function isFeatureArray(value: unknown): value is OsmFeature[] {
