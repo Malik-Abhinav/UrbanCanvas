@@ -114,6 +114,7 @@ export default function MapSearch() {
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
   const dragStartRef = useRef<ScreenPoint | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef<string | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -218,8 +219,17 @@ export default function MapSearch() {
       const message = event.error?.message ?? "Mapbox failed to load satellite imagery.";
       setMapError(message);
     });
+    // Coalesce revision bumps to one per animation frame: "move" fires far
+    // more often than frames render, and every bump re-renders the workspace.
     map.on("move", () => {
-      setMapRevision((current) => current + 1);
+      if (moveFrameRef.current !== null) {
+        return;
+      }
+
+      moveFrameRef.current = window.requestAnimationFrame(() => {
+        moveFrameRef.current = null;
+        setMapRevision((current) => current + 1);
+      });
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -238,6 +248,10 @@ export default function MapSearch() {
     }, 250);
 
     return () => {
+      if (moveFrameRef.current !== null) {
+        window.cancelAnimationFrame(moveFrameRef.current);
+        moveFrameRef.current = null;
+      }
       resizeObserver.disconnect();
       markerRef.current?.remove();
       map.remove();
@@ -375,7 +389,7 @@ export default function MapSearch() {
   }
 
   function handleSelectionPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (!isSelectingArea || !mapRef.current) {
+    if (!isSelectingArea || !mapRef.current || !mapRef.current.isStyleLoaded()) {
       return;
     }
 
