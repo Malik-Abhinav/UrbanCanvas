@@ -17,6 +17,33 @@ function signal(id: string): DrawingObjectV1 {
 }
 
 describe("historyReducer", () => {
+  it("updates an object's properties in place, keeping its identity and undo history", () => {
+    let state = historyReducer(emptyHistoryState, { object: signal("a"), type: "add" });
+
+    state = historyReducer(state, { id: "a", properties: { kind: "pedestrian" }, type: "update" });
+
+    expect(state.present).toHaveLength(1);
+    expect(state.present[0].id).toBe("a");
+    expect(state.present[0].properties).toEqual({ kind: "pedestrian" });
+    expect(canUndo(state)).toBe(true);
+
+    state = historyReducer(state, { type: "undo" });
+    expect(state.present[0].properties).toEqual({ kind: "vehicle" });
+
+    state = historyReducer(state, { type: "redo" });
+    expect(state.present[0].properties).toEqual({ kind: "pedestrian" });
+  });
+
+  it("ignores property updates for unknown ids without polluting history", () => {
+    const state = historyReducer(emptyHistoryState, {
+      id: "missing",
+      properties: { kind: "cycle" },
+      type: "update"
+    });
+
+    expect(state).toBe(emptyHistoryState);
+  });
+
   it("adds objects and clears the redo future", () => {
     let state = historyReducer(emptyHistoryState, { object: signal("a"), type: "add" });
     state = historyReducer(state, { object: signal("b"), type: "add" });

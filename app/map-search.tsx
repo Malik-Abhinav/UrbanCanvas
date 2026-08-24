@@ -11,6 +11,7 @@ import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
 import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
+import ObjectInspector from "./components/workspace/object-inspector";
 import LayersPanel from "./components/workspace/layers-panel";
 import {
   createLayerSettings,
@@ -135,6 +136,9 @@ export default function MapSearch() {
   const moveFrameRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef<string | null>(null);
   const pendingProjectIdRef = useRef<string | null>(null);
+  // The overlay owns selection + property commits; these mirror them into the sidebar.
+  const [inspectedObject, setInspectedObject] = useState<DrawingObjectV1 | null>(null);
+  const propertyUpdateRef = useRef<((key: string, value: string) => void) | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedPlace, setSelectedPlace] = useState("Delhi, India");
@@ -1086,6 +1090,14 @@ export default function MapSearch() {
               />
             </div>
           ) : null}
+          {isAreaConfirmed ? (
+            <div className="mt-4">
+              <ObjectInspector
+                object={inspectedObject}
+                onPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
+              />
+            </div>
+          ) : null}
           <form className="mt-8" onSubmit={handleSearch}>
             <label className="text-sm font-medium text-white/75" htmlFor="location-search">
               Search location
@@ -1442,6 +1454,10 @@ export default function MapSearch() {
                 height={overlayBox.height}
                 initialObjects={loadedProjectObjects}
                 layerSettings={layerSettings}
+                onBindPropertyUpdate={(update) => {
+                  propertyUpdateRef.current = update;
+                }}
+                onSelectionChange={setInspectedObject}
                 mapRevision={mapRevision}
                 objectsRevision={projectObjectsRevision}
                 onObjectsChange={handleObjectsChange}
