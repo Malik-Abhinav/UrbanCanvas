@@ -41,6 +41,7 @@ import {
 } from "./drawing-document-bridge";
 import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
 import type { DrawingObjectV1 } from "../shared/drawing-document";
+import ObjectInspector, { applyPropertyPatch } from "./components/workspace/object-inspector";
 import { StyledDrawingObject, type RenderedProposalObject } from "./drawing-renderer";
 import { computeContextRoadStyle, scaleContextAtZoom } from "./drawing-style";
 import {
@@ -61,6 +62,10 @@ type SatelliteOverlayProps = {
   height: number;
   initialObjects: DrawingObjectV1[];
   layerSettings: LayerSettings;
+  /** Receives the commit function for inspector edits made outside the canvas. */
+  onBindPropertyUpdate?: (update: (key: string, value: string) => void) => void;
+  /** Reports the currently selected V1 object (null when nothing is selected). */
+  onSelectionChange?: (object: DrawingObjectV1 | null) => void;
   mapRevision: number;
   objectsRevision: number;
   onObjectsChange: (objects: DrawingObjectV1[]) => void;
@@ -236,6 +241,8 @@ export default function SatelliteOverlay({
   height,
   initialObjects,
   layerSettings,
+  onBindPropertyUpdate,
+  onSelectionChange,
   mapRevision,
   objectsRevision,
   onObjectsChange,
@@ -261,6 +268,24 @@ export default function SatelliteOverlay({
   const [pathStartNodeId, setPathStartNodeId] = useState<string | null>(null);
   const [analysisPath, setAnalysisPath] = useState<AnalysisPath | null>(null);
   const [analysisMessage, setAnalysisMessage] = useState("Pick two road points to show the shortest path.");
+  const selectedObject = useMemo(
+    () => objects.find((object) => object.id === selectedId) ?? null,
+    [objects, selectedId]
+  );
+  const objectsRef = useRef(objects);
+  const selectedIdRef = useRef(selectedId);
+
+  useEffect(() => {
+    objectsRef.current = objects;
+  }, [objects]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    onSelectionChange?.(selectedObject);
+  }, [onSelectionChange, selectedObject]);
 
   const grid = useMemo(() => {
     const verticalLines = Math.ceil(width / gridSize);
@@ -537,6 +562,25 @@ export default function SatelliteOverlay({
     setSelectedId(migrated.id);
   }
 
+  function updateSelectedProperty(key: string, value: string) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object) {
+      return;
+    }
+
+    // Coerce/filter through the inspector's patch logic, then commit as an
+    // in-place property update — the object keeps its identity and undo works.
+    const patched = applyPropertyPatch(object, { [key]: value });
+
+    dispatchHistory({ id: object.id, properties: patched.properties as Record<string, unknown>, type: "update" });
+  }
+
+  useEffect(() => {
+    onBindPropertyUpdate?.(updateSelectedProperty);
+  });
+
   function removeObject(id: string) {
     dispatchHistory({ id, type: "remove" });
     setSelectedId((current) => (current === id ? null : current));
@@ -724,6 +768,12 @@ export default function SatelliteOverlay({
       {hoveredTool ? (
         <div className="absolute left-[4.75rem] top-3 z-20 rounded border border-white/20 bg-[#101311]/95 px-3 py-2 text-sm font-medium text-white shadow-xl">
           {getToolLabel(hoveredTool)}
+        </div>
+      ) : null}
+
+      {selectedObject ? (
+        <div className="absolute bottom-3 left-3 z-10 w-56">
+          <ObjectInspector object={selectedObject} onPropertyChange={updateSelectedProperty} />
         </div>
       ) : null}
 
