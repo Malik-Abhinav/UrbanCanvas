@@ -40,8 +40,19 @@ import {
   type PixelMetreConverter
 } from "./drawing-document-bridge";
 import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
-import type { DrawingObjectV1 } from "../shared/drawing-document";
+import type { LatLng } from "../shared/geo";
+import type { DrawingObjectV1, LineGeometry } from "../shared/drawing-document";
 import ObjectInspector, { applyPropertyPatch } from "./components/workspace/object-inspector";
+import { GeometryEditorOverlay } from "./geometry-editor";
+import {
+  applyGeometryToLineObject,
+  dragVertex,
+  insertVertexAfter,
+  joinLines,
+  removeVertex,
+  splitLineAtVertex,
+  translateLine
+} from "./drawing-operations";
 import { StyledDrawingObject, type RenderedProposalObject } from "./drawing-renderer";
 import { computeContextRoadStyle, scaleContextAtZoom } from "./drawing-style";
 import {
@@ -105,6 +116,9 @@ declare global {
 }
 
 type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
+
+/** How close (metres) two line endpoints must be for join-segments to link them. */
+const JOIN_TOLERANCE_METRES = 2;
 
 type AnalysisMode = "idle" | "picking-path";
 
@@ -272,6 +286,10 @@ export default function SatelliteOverlay({
     () => objects.find((object) => object.id === selectedId) ?? null,
     [objects, selectedId]
   );
+  // Geometry editing session: active while a line object is selected with the
+  // select tool. Escape reverts to the session snapshot; Enter confirms.
+  const [isEditingGeometry, setIsEditingGeometry] = useState(false);
+  const editSnapshotRef = useRef<DrawingObjectV1 | null>(null);
   const objectsRef = useRef(objects);
   const selectedIdRef = useRef(selectedId);
 
@@ -612,6 +630,158 @@ export default function SatelliteOverlay({
     }
 
     setSelectedId(id);
+
+    // Entering a geometry editing session for line objects: snapshot for Escape.
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (object && object.geometry.type === "LineString") {
+      editSnapshotRef.current = object;
+      setIsEditingGeometry(true);
+    } else {
+      editSnapshotRef.current = null;
+      setIsEditingGeometry(false);
+    }
+  }
+
+  function exitGeometryEditing() {
+    setIsEditingGeometry(false);
+    editSnapshotRef.current = null;
+  }
+
+  function cancelGeometryEditing() {
+    const snapshot = editSnapshotRef.current;
+    const id = selectedIdRef.current;
+
+    if (snapshot && id && objectsRef.current.some((object) => object.id === id)) {
+      dispatchHistory({ id, object: snapshot, type: "update-object" });
+    }
+
+    setSelectedId(null);
+    exitGeometryEditing();
+  }
+
+  function commitGeometry(id: string, geometry: LineGeometry) {
+    const current = objectsRef.current.find((object) => object.id === id);
+    const next = current ? applyGeometryToLineObject(current, geometry) : null;
+
+    if (!next) {
+      return;
+    }
+
+    dispatchHistory({ id, object: next, type: "update-object" });
+  }
+
+  function handleDragVertex(vertexIndex: number, point: LatLng) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: dragVertex(object.geometry.points, vertexIndex, point),
+      type: "LineString"
+    });
+  }
+
+  function handleAddVertex(segmentIndex: number, point: LatLng) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: insertVertexAfter(object.geometry.points, segmentIndex, point),
+      type: "LineString"
+    });
+  }
+
+  function handleRemoveVertex(vertexIndex: number) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const points = removeVertex(object.geometry.points, vertexIndex);
+
+    if (points) {
+      commitGeometry(object.id, { points, type: "LineString" });
+    }
+  }
+
+  function handleMoveObject(delta: { dLat: number; dLng: number }) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: translateLine(object.geometry.points, delta),
+      type: "LineString"
+    });
+  }
+
+  /** Splits the selected line at its middle interior vertex into two objects. */
+  function handleSplitSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const parts = splitLineAtVertex(object.geometry.points, Math.floor(object.geometry.points.length / 2));
+
+    if (!parts) {
+      return;
+    }
+
+    const [head, tail] = parts;
+    const newId = `${object.id}-split-${Date.now().toString(36)}`;
+    const splitPart = { ...object, geometry: { ...object.geometry, points: tail }, id: newId } as DrawingObjectV1;
+
+    commitGeometry(object.id, { points: head, type: "LineString" });
+    dispatchHistory({ object: splitPart, type: "add" });
+    setSelectedId(newId);
+    editSnapshotRef.current = splitPart;
+  }
+
+  /** Joins the selected line with the nearest touching line of the same type. */
+  function handleJoinSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const endpoint = object.geometry.points[object.geometry.points.length - 1];
+
+    if (!endpoint) {
+      return;
+    }
+
+    const partner = objects.find(
+      (candidate) =>
+        candidate.id !== object.id &&
+        candidate.type === object.type &&
+        candidate.geometry.type === "LineString" &&
+        getMapDistanceMeters(candidate.geometry.points[0], endpoint) <= JOIN_TOLERANCE_METRES
+    );
+
+    if (!partner || partner.geometry.type !== "LineString") {
+      return;
+    }
+
+    const joinedPoints = joinLines(object.geometry.points, partner.geometry.points);
+
+    commitGeometry(object.id, { points: joinedPoints, type: "LineString" });
+    dispatchHistory({ id: partner.id, type: "remove" });
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -643,12 +813,25 @@ export default function SatelliteOverlay({
       return;
     }
 
+    if (event.key === "Enter" && isEditingGeometry) {
+      event.preventDefault();
+      panLastPointRef.current = null;
+      exitGeometryEditing();
+      return;
+    }
+
     if (event.key === "Escape") {
       setActiveTool("select");
       setAnalysisMode("idle");
       setDraftStart(null);
       setDraftEnd(null);
       panLastPointRef.current = null;
+
+      if (isEditingGeometry) {
+        cancelGeometryEditing();
+        return;
+      }
+
       setSelectedId(null);
     }
   }
@@ -764,6 +947,34 @@ export default function SatelliteOverlay({
           </span>
         ) : null}
       </div>
+
+      {isEditingGeometry && selectedObject && selectedObject.geometry.type === "LineString" ? (
+        <div
+          aria-label="Geometry editing tools"
+          className="absolute left-[4.75rem] top-3 z-10 flex flex-col gap-1 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur"
+          role="toolbar"
+        >
+          <button
+            className="rounded border border-white/15 bg-white/10 px-2 py-1 text-xs transition hover:border-[#f5c542]/70"
+            onClick={handleSplitSelected}
+            title="Split this line into two at its middle vertex"
+            type="button"
+          >
+            Split line
+          </button>
+          <button
+            className="rounded border border-white/15 bg-white/10 px-2 py-1 text-xs transition hover:border-[#f5c542]/70"
+            onClick={handleJoinSelected}
+            title="Join this line with a touching line of the same kind"
+            type="button"
+          >
+            Join segments
+          </button>
+          <p className="max-w-28 text-[9px] leading-tight text-white/40">
+            Enter confirms · Escape cancels
+          </p>
+        </div>
+      ) : null}
 
       {hoveredTool ? (
         <div className="absolute left-[4.75rem] top-3 z-20 rounded border border-white/20 bg-[#101311]/95 px-3 py-2 text-sm font-medium text-white shadow-xl">
@@ -992,6 +1203,18 @@ export default function SatelliteOverlay({
             ))}
 
             {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
+
+            {isEditingGeometry && activeTool === "select" && selectedObject ? (
+              <GeometryEditorOverlay
+                object={selectedObject}
+                onAddVertex={handleAddVertex}
+                onDragVertex={handleDragVertex}
+                onMoveObject={handleMoveObject}
+                onRemoveVertex={handleRemoveVertex}
+                projectMapPoint={onMapPointToScreen}
+                unprojectScreenPoint={onScreenPointToMap}
+              />
+            ) : null}
 
             {draftStart && draftEnd ? (
               <StyledDrawingObject
