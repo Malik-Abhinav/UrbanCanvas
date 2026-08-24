@@ -16,6 +16,11 @@ type ProjectStateRow = ProjectRow & {
   user_edits: unknown;
 };
 
+type ProjectOwnershipRow = {
+  name: string;
+  user_id: string;
+};
+
 const maxProjectNameLength = 80;
 const maxProjectAreaKm2 = 5;
 const maxProjectStateBytes = 6 * 1024 * 1024;
@@ -75,28 +80,44 @@ export async function saveProject(input: unknown, userId: string) {
   await pool!.query("begin");
 
   try {
-    if (project.id) {
-      const update = await pool!.query(
-        `
-          update projects
-          set name = $3, bbox = $4, updated_at = now()
-          where id = $1 and user_id = $2
-            and (char_length($3) <= 80 or name = $3)
-        `,
-        [id, userId, project.name, JSON.stringify(project.bbox)]
-      );
+    const existing = await pool!.query<ProjectOwnershipRow>(
+      `
+        select user_id, name
+        from projects
+        where id = $1
+        for update
+      `,
+      [id]
+    );
+    const existingProject = existing.rows[0];
 
-      if (update.rowCount === 0) {
-        throw new Error("Project not found.");
-      }
-    } else {
-      await pool!.query(
-        `
-          insert into projects (id, user_id, name, bbox)
-          values ($1, $2, $3, $4)
-        `,
-        [id, userId, project.name, JSON.stringify(project.bbox)]
-      );
+    if (existingProject && existingProject.user_id !== userId) {
+      throw new Error("Project not found.");
+    }
+
+    if (
+      project.name.length > maxProjectNameLength &&
+      (!existingProject || existingProject.name !== project.name)
+    ) {
+      throw new Error(`Project name must be ${maxProjectNameLength} characters or fewer.`);
+    }
+
+    const upsert = await pool!.query<{ id: string }>(
+      `
+        insert into projects (id, user_id, name, bbox)
+        values ($1, $2, $3, $4)
+        on conflict (id) do update set
+          name = excluded.name,
+          bbox = excluded.bbox,
+          updated_at = now()
+        where projects.user_id = excluded.user_id
+        returning id
+      `,
+      [id, userId, project.name, JSON.stringify(project.bbox)]
+    );
+
+    if (upsert.rowCount === 0) {
+      throw new Error("Project not found.");
     }
 
     await pool!.query(

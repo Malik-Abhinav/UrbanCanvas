@@ -10,10 +10,12 @@ type WorkspaceAuth = {
   isSignedIn: boolean;
 };
 
+const getFixtureToken = async () => "e2e-fixture-token";
+
 function useFixtureWorkspaceAuth(): WorkspaceAuth {
   return {
-    getToken: async () => null,
-    isSignedIn: false
+    getToken: getFixtureToken,
+    isSignedIn: true
   };
 }
 

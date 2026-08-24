@@ -8,6 +8,7 @@ import { PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
 import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
+import { normalizeSavedProject } from "./project-normalization";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
 import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
@@ -80,11 +81,6 @@ type ProjectSummary = {
   updated_at: string;
 };
 
-type ProjectDetail = ProjectSummary & {
-  osm_data: OsmData;
-  user_edits: DrawingObject[];
-};
-
 type ProjectsResponse = {
   status: "ok" | "error";
   message?: string;
@@ -94,7 +90,7 @@ type ProjectsResponse = {
 type ProjectResponse = {
   status: "ok" | "error";
   message?: string;
-  project?: ProjectDetail;
+  project?: unknown;
 };
 
 type ChangeAnalysis = {
@@ -120,6 +116,7 @@ export default function MapSearch() {
   const dragStartRef = useRef<ScreenPoint | null>(null);
   const moveFrameRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef<string | null>(null);
+  const pendingProjectIdRef = useRef<string | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedPlace, setSelectedPlace] = useState("Delhi, India");
@@ -409,6 +406,7 @@ export default function MapSearch() {
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
+    pendingProjectIdRef.current = null;
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
@@ -487,6 +485,7 @@ export default function MapSearch() {
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
+    pendingProjectIdRef.current = null;
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
@@ -626,13 +625,18 @@ export default function MapSearch() {
       setProjectMessage(null);
     }
 
+    const projectId = currentProjectId ?? pendingProjectIdRef.current ?? window.crypto.randomUUID();
+    if (!currentProjectId) {
+      pendingProjectIdRef.current = projectId;
+    }
+
     try {
       const response = await apiFetch(`${apiUrl}/api/projects`, {
         method: "POST",
         headers: await getProjectRequestHeaders(),
         body: JSON.stringify({
           bbox: selectedBounds,
-          id: currentProjectId,
+          id: projectId,
           name: projectName,
           osmData,
           userEdits: projectObjects
@@ -640,12 +644,15 @@ export default function MapSearch() {
       });
       const payload = await readApiJson<ProjectResponse>(response);
 
-      if (!response.ok || payload.status !== "ok" || !payload.project) {
+      const normalized = normalizeSavedProject(payload.project);
+
+      if (!response.ok || payload.status !== "ok" || !normalized) {
         throw new Error(payload.message ?? "Unable to save project.");
       }
 
-      setCurrentProjectId(payload.project.id);
-      setProjectName(payload.project.name);
+      setCurrentProjectId(normalized.project.id);
+      pendingProjectIdRef.current = null;
+      setProjectName(normalized.project.name);
       lastSavedSignatureRef.current = signature;
 
       if (silent) {
@@ -694,7 +701,7 @@ export default function MapSearch() {
     async (id: string) => {
       setProjectDeleteError(null);
 
-      if (!window.confirm("Delete this saved project? This cannot be undone.")) {
+      if (!window.confirm("Delete this saved project? Your current canvas will stay open as an unsaved project.")) {
         return;
       }
 
@@ -712,11 +719,18 @@ export default function MapSearch() {
         }
 
         if (currentProjectId === id) {
-          clearSelection();
+          setCurrentProjectId(null);
+          pendingProjectIdRef.current = null;
+          lastSavedSignatureRef.current = null;
+          setLastAutoSaveFailed(false);
         }
 
         setProjects((current) => current.filter((project) => project.id !== id));
-        setProjectMessage("Project deleted.");
+        setProjectMessage(
+          currentProjectId === id
+            ? "Saved project deleted. Your canvas remains open as an unsaved project."
+            : "Project deleted."
+        );
       } catch (deleteError) {
         setProjectDeleteError(deleteError instanceof Error ? deleteError.message : "Unable to delete project.");
       } finally {
@@ -745,13 +759,14 @@ export default function MapSearch() {
         throw new Error(payload.message ?? "Unable to load project.");
       }
 
-      const project = payload.project;
-
-      if (!isProjectDetail(project)) {
+      const normalized = normalizeSavedProject(payload.project);
+      if (!normalized) {
         throw new Error("Saved project data is incomplete or corrupted.");
       }
+      const { project, skippedDrawingCount } = normalized;
 
       setCurrentProjectId(project.id);
+      pendingProjectIdRef.current = null;
       setProjectName(project.name);
       setSelectedBounds(project.bbox);
       setSelectionAreaKm2(getApproximateAreaKm2(project.bbox));
@@ -790,7 +805,11 @@ export default function MapSearch() {
         disableMapInteractions(map);
         setOverlayBox(getOverlayBoxFromBounds(map, project.bbox));
       });
-      setProjectMessage("Project loaded.");
+      setProjectMessage(
+        skippedDrawingCount > 0
+          ? `Project loaded with ${skippedDrawingCount} invalid drawing${skippedDrawingCount === 1 ? "" : "s"} skipped.`
+          : "Project loaded."
+      );
     } catch (loadError) {
       setProjectMessage(loadError instanceof Error ? loadError.message : "Unable to load project.");
     }
@@ -1383,49 +1402,6 @@ function isOsmData(value: unknown): value is OsmData {
     Boolean(data.bbox) &&
     Boolean(data.counts)
   );
-}
-
-function isProjectDetail(value: unknown): value is ProjectDetail {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const project = value as Partial<ProjectDetail>;
-
-  return (
-    typeof project.id === "string" &&
-    typeof project.name === "string" &&
-    Boolean(project.bbox) &&
-    isBoundingBoxValue(project.bbox) &&
-    isOsmData(project.osm_data) &&
-    Array.isArray(project.user_edits) &&
-    project.user_edits.every(isDrawingObjectValue)
-  );
-}
-
-function isBoundingBoxValue(value: unknown): value is BoundingBox {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const bbox = value as Partial<BoundingBox>;
-
-  return (
-    typeof bbox.north === "number" &&
-    typeof bbox.south === "number" &&
-    typeof bbox.east === "number" &&
-    typeof bbox.west === "number"
-  );
-}
-
-function isDrawingObjectValue(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const object = value as { id?: unknown; type?: unknown };
-
-  return typeof object.id === "string" && typeof object.type === "string";
 }
 
 function isFeatureArray(value: unknown): value is OsmFeature[] {

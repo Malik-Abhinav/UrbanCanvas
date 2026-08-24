@@ -25,6 +25,22 @@ export function isE2eFixtureServerEnabled(environment: NodeJS.ProcessEnv = proce
   return environment.NODE_ENV !== "production" && serverRequested && clientRequested;
 }
 
+export function getE2eFixtureAuth(environment: NodeJS.ProcessEnv = process.env) {
+  if (!isE2eFixtureServerEnabled(environment)) {
+    return null;
+  }
+
+  return { token: "e2e-fixture-token", userId: "e2e-fixture-user" } as const;
+}
+
+export function getPlaywrightPort(environment: NodeJS.ProcessEnv = process.env) {
+  const port = Number(environment.PLAYWRIGHT_PORT ?? 3100);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("PLAYWRIGHT_PORT must be an integer between 1 and 65535.");
+  }
+  return port;
+}
+
 export function sanitizeE2eFixtureEnvironment(environment: NodeJS.ProcessEnv = process.env) {
   if (!isE2eFixtureServerEnabled(environment)) {
     return false;

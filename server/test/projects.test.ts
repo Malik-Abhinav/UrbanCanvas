@@ -42,6 +42,12 @@ describe("saveProject validation", () => {
   it("saves an existing legacy project name longer than the editing affordance", async () => {
     const legacyName = "Legacy neighborhood plan ".repeat(5);
     queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("for update")) {
+        return Promise.resolve({ rows: [{ name: legacyName.trim(), user_id: userId }], rowCount: 1 });
+      }
+      if (sql.includes("insert into projects")) {
+        return Promise.resolve({ rows: [{ id: projectId }], rowCount: 1 });
+      }
       if (sql.includes("join project_state")) {
         return Promise.resolve({
           rows: [{ id: projectId, name: legacyName, bbox, created_at: new Date(), updated_at: new Date(), osm_data: {}, user_edits: [] }],
@@ -55,7 +61,7 @@ describe("saveProject validation", () => {
 
     expect(project?.name).toBe(legacyName);
     expect(queryMock).toHaveBeenCalledWith(
-      expect.stringContaining("char_length($3) <= 80 or name = $3"),
+      expect.stringContaining("on conflict (id) do update"),
       [projectId, userId, legacyName.trim(), JSON.stringify(bbox)]
     );
   });
@@ -142,15 +148,72 @@ describe("getProject / deleteProject id handling", () => {
 });
 
 describe("saveProject update path", () => {
-  it("fails the transaction when the project belongs to another user", async () => {
+  it("uses a supplied UUID in an ownership-safe transactional upsert", async () => {
     queryMock.mockImplementation((sql: string) => {
-      if (sql.trim().startsWith("update projects")) {
+      if (sql.includes("for update")) {
         return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      if (sql.includes("insert into projects")) {
+        return Promise.resolve({ rows: [{ id: projectId }], rowCount: 1 });
+      }
+      if (sql.includes("join project_state")) {
+        return Promise.resolve({
+          rows: [{ id: projectId, name: "My plan", bbox, created_at: new Date(), updated_at: new Date(), osm_data: {}, user_edits: [] }],
+          rowCount: 1
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    await expect(saveProject(validBody({ id: projectId }), userId)).resolves.toMatchObject({ id: projectId });
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringMatching(/insert into projects[\s\S]*on conflict \(id\) do update[\s\S]*projects\.user_id = excluded\.user_id/i),
+      [projectId, userId, "My plan", JSON.stringify(bbox)]
+    );
+    expect(queryMock).toHaveBeenCalledWith("commit");
+  });
+
+  it("rolls back when a supplied UUID belongs to another user", async () => {
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("for update")) {
+        return Promise.resolve({ rows: [{ name: "Their plan", user_id: "user_2" }], rowCount: 1 });
       }
       return Promise.resolve({ rows: [], rowCount: 1 });
     });
 
     await expect(saveProject(validBody({ id: projectId }), userId)).rejects.toThrow(/Project not found/);
     expect(queryMock).toHaveBeenCalledWith("rollback");
+  });
+
+  it("allows only the exact unchanged long name on an existing legacy project", async () => {
+    const legacyName = "Legacy neighborhood plan ".repeat(5).trim();
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("for update")) {
+        return Promise.resolve({ rows: [{ name: legacyName, user_id: userId }], rowCount: 1 });
+      }
+      if (sql.includes("insert into projects")) {
+        return Promise.resolve({ rows: [{ id: projectId }], rowCount: 1 });
+      }
+      if (sql.includes("join project_state")) {
+        return Promise.resolve({ rows: [{ id: projectId, name: legacyName, bbox, osm_data: {}, user_edits: [] }], rowCount: 1 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    await expect(saveProject(validBody({ id: projectId, name: legacyName }), userId)).resolves.toMatchObject({ name: legacyName });
+    await expect(saveProject(validBody({ id: projectId, name: `${legacyName}!` }), userId)).rejects.toThrow(/80 characters/i);
+  });
+
+  it("does not let a client-generated UUID bypass the new-name limit", async () => {
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("for update")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    await expect(saveProject(validBody({ id: projectId, name: "x".repeat(81) }), userId)).rejects.toThrow(/80 characters/i);
+    expect(queryMock).toHaveBeenCalledWith("rollback");
+    expect(queryMock).not.toHaveBeenCalledWith(expect.stringContaining("insert into project_state"), expect.anything());
   });
 });
