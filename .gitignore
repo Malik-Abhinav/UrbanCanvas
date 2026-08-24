@@ -10,4 +10,8 @@ yarn-debug.log*
 yarn-error.log*
 .DS_Store
 *.tsbuildinfo
+playwright-report
+playwright/.cache
+test-results
+.next-e2e-safety-backup-*
 PLAN.md

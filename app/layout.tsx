@@ -13,11 +13,15 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const fixturesEnabled =
+    process.env.NODE_ENV !== "production" &&
+    process.env.E2E_TEST_FIXTURES === "1" &&
+    process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1";
+  const content = fixturesEnabled ? children : <ClerkProvider>{children}</ClerkProvider>;
+
   return (
     <html lang="en">
-      <body>
-        <ClerkProvider>{children}</ClerkProvider>
-      </body>
+      <body>{content}</body>
     </html>
   );
 }

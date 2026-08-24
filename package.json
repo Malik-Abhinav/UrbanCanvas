@@ -14,6 +14,10 @@
     "start:api": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:e2e:production-bundle": "node scripts/verify-e2e-production-bundle.mjs",
+    "test:e2e:production-safety": "node scripts/verify-e2e-production-safety.mjs",
     "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -36,6 +40,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@playwright/test": "^1.62.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",

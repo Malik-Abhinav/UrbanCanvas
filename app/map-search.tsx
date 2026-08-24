@@ -1,18 +1,21 @@
 "use client";
 
-import { Show, SignInButton, SignUpButton, UserButton, useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 import { PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
+import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
+import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const fixturesEnabled =
+  process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1";
 const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 5;
 const autoSaveDelayMs = 120_000;
@@ -109,7 +112,7 @@ type AnalysisResponse = {
 };
 
 export default function MapSearch() {
-  const { getToken, isSignedIn } = useAuth();
+  const { getToken, isSignedIn } = useWorkspaceAuth();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
@@ -177,7 +180,24 @@ export default function MapSearch() {
   }, [getToken]);
 
   useEffect(() => {
-    if (!mapContainerRef.current || !mapboxToken || mapRef.current) {
+    if (!mapContainerRef.current || mapRef.current) {
+      return;
+    }
+
+    if (fixturesEnabled) {
+      const map = createE2eFixtureMap(mapContainerRef.current);
+      mapRef.current = map;
+      setIsMapLoaded(true);
+      ensureSelectionLayer(map);
+
+      return () => {
+        map.remove();
+        mapRef.current = null;
+        setIsMapLoaded(false);
+      };
+    }
+
+    if (!mapboxToken) {
       return;
     }
 
@@ -930,27 +950,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight tracking-normal">Map workspace</h1>
             </div>
             <div className="flex items-center gap-2">
-              <Show when="signed-out">
-                <SignInButton mode="modal">
-                  <button
-                    className={`secondary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
-                    type="button"
-                  >
-                    Sign in
-                  </button>
-                </SignInButton>
-                <SignUpButton mode="modal">
-                  <button
-                    className={`primary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
-                    type="button"
-                  >
-                    Sign up
-                  </button>
-                </SignUpButton>
-              </Show>
-              <Show when="signed-in">
-                <UserButton />
-              </Show>
+              <WorkspaceAuthControls collapsed={isSidebarCollapsed} />
               <button
                 aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
                 className="icon-button"
@@ -1277,7 +1277,9 @@ export default function MapSearch() {
 
           {isAreaConfirmed && overlayBox ? (
             <div
+              aria-label="Drawing canvas overlay"
               className="absolute overflow-hidden"
+              role="region"
               style={{
                 height: overlayBox.height,
                 left: overlayBox.left,
@@ -1308,7 +1310,7 @@ export default function MapSearch() {
             </div>
           ) : null}
 
-          {!mapboxToken && !isAreaConfirmed ? (
+          {!mapboxToken && !fixturesEnabled && !isAreaConfirmed ? (
             <div className="absolute inset-0 flex items-center justify-center p-6">
               <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
                 <h2 className="text-xl font-semibold">Mapbox token needed</h2>
@@ -1426,7 +1428,10 @@ function Coordinate({ label, value }: { label: string; value: number }) {
 
 function Count({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded border border-white/10 bg-white/[0.04] px-2 py-2">
+    <div
+      aria-label={`${label}: ${value}`}
+      className="rounded border border-white/10 bg-white/[0.04] px-2 py-2"
+    >
       <p className="text-[11px] text-white/45">{label}</p>
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
