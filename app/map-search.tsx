@@ -9,6 +9,7 @@ import type { OsmData, OsmFeature } from "./canvas-renderer";
 import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
+import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
 import type { DrawingObject } from "./satellite-overlay";
 import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
@@ -21,6 +22,7 @@ const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 5;
 const projectNameEditingLimit = 80;
 const autoSaveDelayMs = 120_000;
+const osmRequestTimeoutMs = 65_000;
 const selectionSourceId = "selected-area";
 const selectionFillLayerId = "selected-area-fill";
 const selectionLineLayerId = "selected-area-line";
@@ -130,6 +132,8 @@ export default function MapSearch() {
   const [osmData, setOsmData] = useState<OsmData | null>(null);
   const [isFetchingOsm, setIsFetchingOsm] = useState(false);
   const [osmError, setOsmError] = useState<string | null>(null);
+  const [osmRetryAvailableAt, setOsmRetryAvailableAt] = useState<number | null>(null);
+  const [osmRetrySeconds, setOsmRetrySeconds] = useState(0);
   const [isAreaConfirmed, setIsAreaConfirmed] = useState(false);
   const [overlayBox, setOverlayBox] = useState<OverlayBox | null>(null);
   const [mapRevision, setMapRevision] = useState(0);
@@ -163,6 +167,21 @@ export default function MapSearch() {
       setMapRevision((current) => current + 1);
     }, 260);
   }, [isSidebarCollapsed]);
+
+  useEffect(() => {
+    if (osmRetryAvailableAt === null) {
+      setOsmRetrySeconds(0);
+      return;
+    }
+
+    const updateCountdown = () => {
+      setOsmRetrySeconds(Math.max(0, Math.ceil((osmRetryAvailableAt - Date.now()) / 1_000)));
+    };
+    updateCountdown();
+    const intervalId = window.setInterval(updateCountdown, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [osmRetryAvailableAt]);
 
   const getProjectRequestHeaders = useCallback(async () => {
     const token = await getToken();
@@ -402,6 +421,7 @@ export default function MapSearch() {
     setSelectionError(null);
     setOsmData(null);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
@@ -481,6 +501,7 @@ export default function MapSearch() {
     setSelectionAreaKm2(areaKm2);
     setOsmData(null);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
@@ -535,6 +556,7 @@ export default function MapSearch() {
   async function fetchSelectedAreaData(bounds: BoundingBox) {
     setIsFetchingOsm(true);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
 
     try {
       const response = await apiFetch(`${apiUrl}/api/osm`, {
@@ -544,11 +566,15 @@ export default function MapSearch() {
         },
         body: JSON.stringify({
           bbox: bounds
-        })
+        }),
+        timeoutMs: osmRequestTimeoutMs
       });
       const payload = await readApiJson<OsmResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.data) {
+        if (response.status === 429) {
+          setOsmRetryAvailableAt(Date.now() + getRetryAfterMilliseconds(response.headers.get("retry-after")));
+        }
         throw new Error(payload.message ?? "Unable to fetch map data.");
       }
 
@@ -557,6 +583,7 @@ export default function MapSearch() {
       }
 
       setOsmData(payload.data);
+      setOsmRetryAvailableAt(null);
       if (payload.data.counts.roads === 0) {
         setOsmError("No OSM roads were found in this selection. You can still draw, but snapping and graph analysis will be limited.");
       }
@@ -772,6 +799,7 @@ export default function MapSearch() {
       setSelectionAreaKm2(getApproximateAreaKm2(project.bbox));
       setOsmData(project.osm_data);
       setOsmError(null);
+      setOsmRetryAvailableAt(null);
       setIsSelectingArea(false);
       setIsAreaConfirmed(true);
       setOverlayBox(null);
@@ -1094,9 +1122,23 @@ export default function MapSearch() {
             ) : null}
 
             {osmError ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
-                {osmError}
-              </p>
+              <div className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
+                <p>{osmError}</p>
+                {!osmData && isAreaConfirmed && selectedBounds ? (
+                  <button
+                    className="secondary-button mt-2 px-3 py-1.5 text-xs"
+                    disabled={isFetchingOsm || osmRetrySeconds > 0}
+                    onClick={() => void fetchSelectedAreaData(selectedBounds)}
+                    type="button"
+                  >
+                    {isFetchingOsm
+                      ? "Retrying OSM..."
+                      : osmRetrySeconds > 0
+                        ? `Retry OSM in ${osmRetrySeconds}s`
+                        : "Retry OSM"}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             {osmData ? (

@@ -5,7 +5,7 @@ import express from "express";
 import { analyzeProjectChanges } from "./analysis.js";
 import { checkDatabase } from "./db.js";
 import { fetchOsmData } from "./osm.js";
-import { createRateLimiter } from "./rate-limit.js";
+import { createOsmRequestGuard, parseOsmRateLimit } from "./osm-request-guard.js";
 import { deleteProject, getProject, listProjects, saveProject } from "./projects.js";
 
 const app = express();
@@ -20,6 +20,7 @@ app.set("trust proxy", 1);
 app.use(
   cors({
     allowedHeaders: ["authorization", "content-type"],
+    exposedHeaders: ["retry-after"],
     origin: frontendOrigins
   })
 );
@@ -27,8 +28,8 @@ app.use(express.json({ limit: "8mb" }));
 
 // The OSM endpoint proxies a public upstream that rate-limits by IP; keep
 // anonymous traffic from exhausting it (or our own IP budget).
-const osmRateLimiter = createRateLimiter({
-  limit: Number(process.env.OSM_RATE_LIMIT ?? 10),
+const osmRequestGuard = createOsmRequestGuard({
+  limit: parseOsmRateLimit(process.env.OSM_RATE_LIMIT),
   windowMs: 60_000
 });
 
@@ -51,7 +52,7 @@ app.get("/api/health", async (_req, res) => {
   });
 });
 
-app.post("/api/osm", osmRateLimiter, async (req, res) => {
+app.post("/api/osm", ...osmRequestGuard, async (req, res) => {
   try {
     const data = await fetchOsmData(req.body?.bbox);
 

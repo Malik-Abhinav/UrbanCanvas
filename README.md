@@ -174,7 +174,7 @@ Open:
 | `CLERK_PUBLISHABLE_KEY` | Yes | Clerk publishable key used by the Express Clerk middleware. |
 | `CLERK_SECRET_KEY` | Yes | Clerk secret key used by authenticated API routes. |
 | `AI_ANALYSIS_PROVIDER` | Yes | Set to `rules` for the local rule-based analyzer. |
-| `OSM_RATE_LIMIT` | No | Max anonymous `/api/osm` requests per client IP per minute. Defaults to `10`. |
+| `OSM_RATE_LIMIT` | No | Positive-integer max anonymous `/api/osm` requests per client IP per minute. Defaults (and safely falls back) to `30` when unset or invalid. |
 | `API_PORT` | Local only | Optional local API port. Defaults to `3001`. Render provides `PORT` automatically. |
 
 Example local values:
@@ -201,6 +201,7 @@ AI_ANALYSIS_PROVIDER=rules
 | `npm run dev:api` | Run only the Express API with `tsx watch`. |
 | `npm run lint` | Run ESLint. |
 | `npm run test` | Run the vitest suite (server modules, drawing history, geometry). |
+| `PLAYWRIGHT_PORT=3102 npm run test:e2e` | Run isolated Playwright coverage on a validated custom port (defaults to `3100`). |
 | `npm run typecheck` | Type-check frontend and backend TypeScript. |
 | `npm run build` | Build frontend and backend. |
 | `npm run build:web` | Build only the Next.js frontend. |
@@ -264,6 +265,7 @@ Use a Neon Postgres connection string as `DATABASE_URL`. The API creates the req
 
 - Selected areas are limited to 5 km² to keep Overpass requests fast and reliable.
 - OSM coverage varies by location; snapping and graph analysis depend on available OSM road geometry.
+- Anonymous OSM rate limiting remains IP-based to protect the shared Overpass upstream. Users behind the same NAT share one quota; client-supplied rate keys are intentionally not trusted.
 - The walkability score is a heuristic based on sidewalk coverage over graph edges, not a calibrated mobility model.
 - The change analysis is rule-based and does not run a traffic simulation.
 - Render free services may cold-start after inactivity.
