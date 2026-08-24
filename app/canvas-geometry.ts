@@ -12,7 +12,22 @@ type MapPoint = {
 
 export type { MapPoint, Point };
 
-export const snapDistance = 34;
+export const snapThresholdPx = 34;
+
+/**
+ * Screen-pixel snapping thresholds moved to app/drawing-snap.ts, which owns
+ * configurable, map-distance-clamped resolution (Task 19). This re-export
+ * keeps the historical pixel value available under its old name.
+ */
+export const snapDistance = snapThresholdPx;
+
+/** Converts a lat/lng delta into approximate local-plane metre offsets. */
+export function getLocalMetresOffset(point: MapPoint, origin: MapPoint) {
+  return {
+    x: (point.lng - origin.lng) * 110_574 * Math.cos((origin.lat * Math.PI) / 180),
+    y: (point.lat - origin.lat) * 110_574
+  };
+}
 
 export function getClosestPointOnSegment(point: Point, start: Point, end: Point) {
   const dx = end.x - start.x;

@@ -65,8 +65,15 @@ import {
   getDistance,
   getMapDistanceMeters,
   interpolateMapPoint,
-  normalizePoint
+  normalizePoint,
+  snapThresholdPx as snapDistance
 } from "./canvas-geometry";
+import {
+  buildSnapTargets,
+  resolveSnap,
+  type ResolvedSnap,
+  type SnapTarget
+} from "./drawing-snap";
 
 type SatelliteOverlayProps = {
   getMapZoom: () => number;
@@ -216,12 +223,14 @@ type SnapPreview =
       object: RenderedDrawingObject;
       path: MapPoint[];
       point: Point;
+      snapKind?: ResolvedSnap["kind"];
       type: "line";
     }
   | {
       end: Point;
       object: RenderedDrawingObject;
       point: Point;
+      snapKind?: ResolvedSnap["kind"];
       start: Point;
       type: "crossing";
     }
@@ -229,11 +238,11 @@ type SnapPreview =
       center: Point;
       centerMap: MapPoint;
       object: RenderedDrawingObject;
+      snapKind?: ResolvedSnap["kind"];
       type: "roundabout";
     };
 
 const gridSize = 32;
-const snapDistance = 34;
 
 const tools: Array<{
   Icon: typeof MousePointer2;
@@ -353,6 +362,18 @@ export default function SatelliteOverlay({
 
     return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap, converter);
   }, [converter, mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
+  // Network-continuity snap targets: OSM segments/endpoints/intersections,
+  // proposal object geometry, and roundabout circumference connection points.
+  const snapTargets = useMemo(() => {
+    void mapRevision;
+
+    return buildSnapTargets({
+      metresToPixels: (metres, at) => converter.metresToPixels(metres, at),
+      osmRoads,
+      project: onMapPointToScreen,
+      proposalObjects: objects
+    });
+  }, [converter, mapRevision, objects, onMapPointToScreen, osmRoads]);
   const snapPreview = useMemo(() => {
     if (!draftStart || !draftEnd) {
       return null;
@@ -365,9 +386,11 @@ export default function SatelliteOverlay({
       projectedRoads,
       roundaboutSnaps,
       onMapPointToScreen,
-      onScreenPointToMap
+      onScreenPointToMap,
+      snapTargets,
+      () => getMapZoomRef.current()
     );
-  }, [activeTool, draftEnd, draftStart, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps]);
+  }, [activeTool, draftEnd, draftStart, getMapZoomRef, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps, snapTargets]);
   const graphAnalysis = useMemo(() => {
     void mapRevision;
 
@@ -1254,6 +1277,23 @@ function SnapIndicator({ preview }: { preview: SnapPreview }) {
     );
   }
 
+  // Intersection snaps draw as an open ring so exact crossings read
+  // differently from endpoint/segment connections; all previews keep the
+  // #f5c542 accent on graphite.
+  if (preview.snapKind === "intersection") {
+    return (
+      <Circle
+        dash={[3, 3]}
+        fill="rgba(16, 19, 17, 0.35)"
+        radius={9}
+        stroke="#f5c542"
+        strokeWidth={2.5}
+        x={preview.point.x}
+        y={preview.point.y}
+      />
+    );
+  }
+
   return (
     <Circle
       fill="#f5c542"
@@ -1275,8 +1315,58 @@ function getSnapPreview(
   roads: ProjectedRoad[],
   roundaboutSnaps: RoundaboutSnap[],
   projectMapPoint: (point: MapPoint) => Point,
-  unprojectScreenPoint: (point: Point) => MapPoint
+  unprojectScreenPoint: (point: Point) => MapPoint,
+  snapTargets: readonly SnapTarget[] = [],
+  getZoom: () => number = () => 18
 ): SnapPreview | null {
+  const snapConfig = {
+    latitudeDegrees: unprojectScreenPoint(end).lat,
+    screenThresholdPx: snapDistance,
+    zoom: getZoom()
+  };
+
+  // Network continuity first: connect to exact nodes — OSM endpoints and
+  // intersections, proposal object geometry, roundabout circumference — so
+  // new lines join the network rather than merely approaching it.
+  if (tool === "road" || tool === "bike" || tool === "sidewalk") {
+    const startMap = unprojectScreenPoint(start);
+    const endMap = unprojectScreenPoint(end);
+    const startNode =
+      resolveSnap({ map: startMap, screen: start }, snapTargets, {
+        ...snapConfig,
+        latitudeDegrees: startMap.lat
+      }) ?? undefined;
+    const endNode = resolveSnap({ map: endMap, screen: end }, snapTargets, snapConfig) ?? undefined;
+    const startIsNode = startNode !== undefined && startNode.target.kind !== "segment";
+    const endIsNode = endNode !== undefined && endNode.target.kind !== "segment";
+
+    if (startIsNode || endIsNode) {
+      const nodeSnap = endIsNode ? endNode : startNode;
+      const path = [
+        startIsNode ? startNode!.mapPoint : startMap,
+        endIsNode ? endNode!.mapPoint : endMap
+      ];
+      const points = path.flatMap((point) => {
+        const projected = projectMapPoint(point);
+
+        return [projected.x, projected.y];
+      });
+
+      return {
+        object: {
+          id: "draft-node-snapped-line",
+          points,
+          snapped: true,
+          type: tool
+        },
+        path,
+        point: nodeSnap?.screenPoint ?? end,
+        snapKind: nodeSnap?.kind,
+        type: "line"
+      };
+    }
+  }
+
   if (tool === "road" || tool === "bike" || tool === "sidewalk") {
     const startRoundaboutSnap = getNearestRoundaboutSnap(start, roundaboutSnaps);
     const endRoundaboutSnap = getNearestRoundaboutSnap(end, roundaboutSnaps);
@@ -1336,6 +1426,50 @@ function getSnapPreview(
 
   if (tool === "crossing") {
     const midpoint = getMidpoint(start, end);
+    const midpointMap = unprojectScreenPoint(midpoint);
+
+    // Prefer a perpendicular alignment across the full target carriageway:
+    // resolveSnap reports interior projections as "perpendicular" on request
+    // and carries the segment's screen geometry for exact endpoints.
+    const perpendicular =
+      resolveSnap(
+        { map: midpointMap, screen: midpoint },
+        snapTargets,
+        { ...snapConfig, latitudeDegrees: midpointMap.lat },
+        { interiorSnapKind: "perpendicular" }
+      ) ?? undefined;
+
+    if (perpendicular && perpendicular.target.kind === "segment") {
+      const length = Math.max(30, getDistance(start, end));
+      const tangent = normalizePoint({
+        x: perpendicular.target.screenEnd.x - perpendicular.target.screenStart.x,
+        y: perpendicular.target.screenEnd.y - perpendicular.target.screenStart.y
+      });
+      const normal = normalizePoint({ x: -tangent.y, y: tangent.x });
+      const crossingStart = {
+        x: perpendicular.screenPoint.x - normal.x * (length / 2),
+        y: perpendicular.screenPoint.y - normal.y * (length / 2)
+      };
+      const crossingEnd = {
+        x: perpendicular.screenPoint.x + normal.x * (length / 2),
+        y: perpendicular.screenPoint.y + normal.y * (length / 2)
+      };
+
+      return {
+        end: crossingEnd,
+        object: {
+          end: crossingEnd,
+          id: "draft-snapped-crossing",
+          start: crossingStart,
+          type: "crossing"
+        },
+        point: perpendicular.screenPoint,
+        snapKind: "perpendicular",
+        start: crossingStart,
+        type: "crossing"
+      };
+    }
+
     const snap = getNearestRoadSnap(midpoint, roads);
     if (!snap) {
       return null;
