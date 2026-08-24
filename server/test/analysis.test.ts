@@ -102,10 +102,18 @@ describe("analyzeProjectChanges input hardening", () => {
     expect(analysis.summary.length).toBeLessThan(400);
   });
 
-  it("rejects more than 500 edits", () => {
+  it("analyzes 501 valid edits within the request body limit", () => {
     const edits = Array.from({ length: 501 }, (_, index) => ({ id: String(index), type: "signal" }));
 
-    expect(() => analyzeProjectChanges(makeInput({ userEdits: edits }))).toThrow(/500 drawing edits/);
+    const analysis = analyzeProjectChanges(makeInput({ userEdits: edits }));
+
+    expect(analysis.summary).toContain("501 traffic signals");
+  });
+
+  it("rejects more than 10,000 edits before analysis work", () => {
+    const edits = Array.from({ length: 10_001 }, (_, index) => ({ id: String(index), type: "signal" }));
+
+    expect(() => analyzeProjectChanges(makeInput({ userEdits: edits }))).toThrow(/10,000 drawing edits/i);
   });
 
   it("treats a whitespace-only project name as unnamed", () => {

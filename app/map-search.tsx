@@ -18,6 +18,7 @@ const fixturesEnabled =
   process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1";
 const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 5;
+const projectNameEditingLimit = 80;
 const autoSaveDelayMs = 120_000;
 const selectionSourceId = "selected-area";
 const selectionFillLayerId = "selected-area-fill";
@@ -187,8 +188,11 @@ export default function MapSearch() {
     if (fixturesEnabled) {
       const map = createE2eFixtureMap(mapContainerRef.current);
       mapRef.current = map;
-      setIsMapLoaded(true);
-      ensureSelectionLayer(map);
+      map.on("load", () => {
+        setMapError(null);
+        setIsMapLoaded(true);
+        ensureSelectionLayer(map);
+      });
 
       return () => {
         map.remove();
@@ -226,17 +230,21 @@ export default function MapSearch() {
       ensureSelectionLayer(map);
     });
     map.on("idle", () => {
-      setMapError(null);
-      setIsMapLoaded(true);
-    });
-    map.on("styledata", () => {
       if (map.isStyleLoaded()) {
         setMapError(null);
         setIsMapLoaded(true);
       }
     });
+    map.on("styledata", () => {
+      const isStyleReady = map.isStyleLoaded();
+      setIsMapLoaded(isStyleReady);
+      if (isStyleReady) {
+        setMapError(null);
+      }
+    });
     map.on("error", (event) => {
       const message = event.error?.message ?? "Mapbox failed to load satellite imagery.";
+      setIsMapLoaded(false);
       setMapError(message);
     });
     // Coalesce revision bumps to one per animation frame: "move" fires far
@@ -380,6 +388,10 @@ export default function MapSearch() {
   }
 
   function toggleAreaSelection() {
+    if (!isMapLoaded || !mapRef.current?.isStyleLoaded()) {
+      return;
+    }
+
     setIsSelectingArea((current) => !current);
     setSelectionError(null);
     setSelectionBox(null);
@@ -1005,17 +1017,22 @@ export default function MapSearch() {
           <section className="mt-6 border-t border-white/10 pt-5">
             <div className="flex gap-2">
               <button
+                aria-describedby={!isMapLoaded ? "area-selection-readiness" : undefined}
                 aria-pressed={isSelectingArea}
                 className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                   isSelectingArea
                     ? "bg-[#63e6be] text-[#06110e] shadow-[0_14px_35px_rgba(99,230,190,0.18)] hover:bg-[#7ff2cf]"
                     : "border border-white/15 bg-white/[0.04] text-white hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
                 }`}
+                disabled={!isMapLoaded}
                 onClick={toggleAreaSelection}
                 type="button"
               >
                 {isSelectingArea ? "Selecting..." : "Select Area"}
               </button>
+              <span className="sr-only" id="area-selection-readiness">
+                Wait for the satellite map to finish loading before selecting an area.
+              </span>
               <button
                 className="secondary-button px-4 py-2.5 text-sm"
                 disabled={!selectedBounds}
@@ -1092,11 +1109,24 @@ export default function MapSearch() {
               Project name
             </label>
             <input
+              aria-describedby="project-name-count"
               className="field-input mt-2 w-full"
               id="project-name"
+              maxLength={Math.max(projectNameEditingLimit, projectName.length)}
               onChange={(event) => setProjectName(event.target.value)}
               value={projectName}
             />
+            <p
+              aria-live="polite"
+              className="mt-1 text-right text-xs leading-5 text-white/45"
+              id="project-name-count"
+              role="status"
+            >
+              {projectName.length} / {projectNameEditingLimit} characters
+              {projectName.length > projectNameEditingLimit
+                ? " — Legacy name preserved; shorten it to 80 characters to use the standard editing limit."
+                : ""}
+            </p>
             <button
               className="primary-button mt-3 w-full px-4 py-2.5 text-sm"
               disabled={isSavingProject || !isSignedIn || !isAreaConfirmed || !osmData}

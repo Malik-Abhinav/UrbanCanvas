@@ -1,6 +1,6 @@
 import type { DrawingObject } from "./satellite-overlay";
 
-const maxHistoryEntries = 50;
+const maxHistoryEntries = 500;
 
 /**
  * Snapshot-based drawing history. Every mutation (add or erase) records the
@@ -11,6 +11,7 @@ const maxHistoryEntries = 50;
  */
 export type HistoryState = {
   future: DrawingObject[][];
+  historyTruncated: boolean;
   past: DrawingObject[][];
   present: DrawingObject[];
 };
@@ -24,18 +25,22 @@ export type HistoryAction =
 
 export const emptyHistoryState: HistoryState = {
   future: [],
+  historyTruncated: false,
   past: [],
   present: []
 };
 
 export function historyReducer(state: HistoryState, action: HistoryAction): HistoryState {
   switch (action.type) {
-    case "add":
+    case "add": {
+      const history = pushPast(state.past, state.present);
       return {
         future: [],
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: [...state.present, action.object]
       };
+    }
 
     case "remove": {
       const next = state.present.filter((object) => object.id !== action.id);
@@ -45,9 +50,11 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
         return state;
       }
 
+      const history = pushPast(state.past, state.present);
       return {
         future: [],
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: next
       };
     }
@@ -60,7 +67,8 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
       }
 
       return {
-        future: [state.present, ...state.future].slice(0, maxHistoryEntries),
+        future: [state.present, ...state.future],
+        historyTruncated: state.historyTruncated,
         past: state.past.slice(0, -1),
         present: previous
       };
@@ -73,9 +81,11 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
         return state;
       }
 
+      const history = pushPast(state.past, state.present);
       return {
         future: state.future.slice(1),
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: next
       };
     }
@@ -83,6 +93,7 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
     case "replace-all":
       return {
         future: [],
+        historyTruncated: false,
         past: [],
         present: action.objects
       };
@@ -101,5 +112,9 @@ export function canUndo(state: HistoryState) {
 }
 
 function pushPast(past: DrawingObject[][], present: DrawingObject[]) {
-  return [...past, present].slice(-maxHistoryEntries);
+  const next = [...past, present];
+  return {
+    past: next.slice(-maxHistoryEntries),
+    truncated: next.length > maxHistoryEntries
+  };
 }
