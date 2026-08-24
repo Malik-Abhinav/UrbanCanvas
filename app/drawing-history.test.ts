@@ -34,6 +34,41 @@ describe("historyReducer", () => {
     expect(state.present[0].properties).toEqual({ kind: "pedestrian" });
   });
 
+  it("replaces geometry via update-object, keeping the id and undoing cleanly", () => {
+    const original = signal("a");
+    let state = historyReducer(emptyHistoryState, { object: original, type: "add" });
+
+    const moved: DrawingObjectV1 = {
+      geometry: { point: { lat: 28.7, lng: 77.3 }, type: "Point" },
+      id: "a",
+      properties: { kind: "vehicle" },
+      type: "traffic-signal"
+    };
+
+    state = historyReducer(state, { id: "a", object: moved, type: "update-object" });
+
+    expect(state.present[0].geometry).toEqual(moved.geometry);
+    expect(state.present[0].id).toBe("a");
+    expect(canUndo(state)).toBe(true);
+
+    state = historyReducer(state, { type: "undo" });
+    expect(state.present[0].geometry).toEqual(original.geometry);
+
+    state = historyReducer(state, { type: "redo" });
+    expect(state.present[0].geometry).toEqual(moved.geometry);
+  });
+
+  it("ignores whole-object updates for unknown ids without polluting history", () => {
+    const state = historyReducer(emptyHistoryState, {
+      id: "missing",
+      object: signal("other"),
+      type: "update-object"
+    });
+
+    expect(state.past).toHaveLength(0);
+    expect(state.present).toHaveLength(0);
+  });
+
   it("ignores property updates for unknown ids without polluting history", () => {
     const state = historyReducer(emptyHistoryState, {
       id: "missing",

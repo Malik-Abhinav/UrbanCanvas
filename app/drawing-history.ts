@@ -20,6 +20,7 @@ export type HistoryAction =
   | { object: DrawingObjectV1; type: "add" }
   | { id: string; type: "remove" }
   | { id: string; properties: Record<string, unknown>; type: "update" }
+  | { id: string; object: DrawingObjectV1; type: "update-object" }
   | { type: "undo" }
   | { type: "redo" }
   | { objects: DrawingObjectV1[]; type: "replace-all" };
@@ -71,6 +72,33 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
 
         updated = true;
         return { ...object, properties: { ...object.properties, ...action.properties } } as DrawingObjectV1;
+      });
+
+      if (!updated) {
+        return state;
+      }
+
+      const history = pushPast(state.past, state.present);
+      return {
+        future: [],
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
+        present: next
+      };
+    }
+
+    case "update-object": {
+      // Whole-object replacement (geometry edits): same id, new geometry or
+      // shape; replaced immutably so past snapshots stay intact for undo.
+      let updated = false;
+      const next = state.present.map((object) => {
+        if (object.id !== action.id) {
+          return object;
+        }
+
+        updated = true;
+
+        return { ...action.object, id: action.id } as DrawingObjectV1;
       });
 
       if (!updated) {
