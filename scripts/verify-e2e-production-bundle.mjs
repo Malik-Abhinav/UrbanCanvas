@@ -6,6 +6,8 @@ const forbidden = [
   "E2E fixture",
   "Test workspace",
   "createE2eFixtureMap",
+  "e2e-fixture-token",
+  "e2e-fixture-user",
   "e2eFixtureMiddleware",
   "NEXT_PUBLIC_E2E_TEST_FIXTURES",
   "E2E_TEST_FIXTURES"

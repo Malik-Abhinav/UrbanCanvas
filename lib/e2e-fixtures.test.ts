@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   E2E_FIXTURE_PRODUCTION_ERROR,
+  getE2eFixtureAuth,
+  getPlaywrightPort,
   isE2eFixtureServerEnabled,
   sanitizeE2eFixtureEnvironment
 } from "./e2e-fixtures";
@@ -61,5 +63,20 @@ describe("isE2eFixtureServerEnabled", () => {
     expect(fixtureEnvironment).not.toHaveProperty("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY");
     expect(fixtureEnvironment).not.toHaveProperty("NEXT_PUBLIC_MAPBOX_TOKEN");
     expect(fixtureEnvironment.NEXT_PUBLIC_API_URL).toBe("http://localhost:3001");
+  });
+
+  it("provides deterministic signed-in auth only for an enabled fixture environment", () => {
+    expect(getE2eFixtureAuth(environment())).toBeNull();
+    expect(
+      getE2eFixtureAuth(environment({ E2E_TEST_FIXTURES: "1", NEXT_PUBLIC_E2E_TEST_FIXTURES: "1" }))
+    ).toEqual({ token: "e2e-fixture-token", userId: "e2e-fixture-user" });
+  });
+
+  it("uses a validated configurable Playwright port", () => {
+    expect(getPlaywrightPort(environment())).toBe(3100);
+    expect(getPlaywrightPort(environment({ PLAYWRIGHT_PORT: "3101" }))).toBe(3101);
+    for (const value of ["0", "65536", "3.1", "not-a-port"]) {
+      expect(() => getPlaywrightPort(environment({ PLAYWRIGHT_PORT: value }))).toThrow(/PLAYWRIGHT_PORT/);
+    }
   });
 });

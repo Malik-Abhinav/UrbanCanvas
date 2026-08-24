@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
+import { getPlaywrightPort } from "./lib/e2e-fixtures";
 
-const port = 3100;
+const port = getPlaywrightPort();
 
 export default defineConfig({
   testDir: "./e2e",
