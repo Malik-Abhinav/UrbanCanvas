@@ -223,8 +223,8 @@ function parseProjectInput(input: unknown) {
     throw new Error("Project osmData is required.");
   }
 
-  if (!Array.isArray(body.userEdits)) {
-    throw new Error("Project userEdits must be an array.");
+  if (!isUserEditsPayload(body.userEdits)) {
+    throw new Error("Project userEdits must be an array or a schemaVersion 1 drawing document.");
   }
 
   return {
@@ -264,6 +264,23 @@ function validateProjectBoundingBox(bbox: unknown): asserts bbox is BoundingBox 
   if (getApproximateAreaKm2(bbox) > maxProjectAreaKm2) {
     throw new Error(`Selected area exceeds the ${maxProjectAreaKm2} km2 limit.`);
   }
+}
+
+// A project's userEdits payload is either a stored legacy drawing array or a
+// schemaVersion 1 drawing document. The contents are stored verbatim; the
+// client owns parsing and migration.
+function isUserEditsPayload(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return true;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return record.schemaVersion === 1 && Array.isArray(record.objects);
 }
 
 function assertProjectId(id: string) {

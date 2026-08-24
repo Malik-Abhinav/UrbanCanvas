@@ -1,4 +1,5 @@
 import type { OsmData, OsmFeature } from "./canvas-renderer";
+import { isVersionedDrawingDocument, type DrawingDocumentV1 } from "./drawing-document-bridge";
 import type { DrawingObject } from "./satellite-overlay";
 
 export type BoundingBox = {
@@ -8,6 +9,12 @@ export type BoundingBox = {
   west: number;
 };
 
+/**
+ * A project's userEdits payload is either the current schemaVersion 1 drawing
+ * document or a stored legacy drawing array (migrated on load).
+ */
+export type UserEditsPayload = DrawingDocumentV1 | DrawingObject[];
+
 export type NormalizedProject = {
   bbox: BoundingBox;
   created_at: string;
@@ -15,7 +22,7 @@ export type NormalizedProject = {
   name: string;
   osm_data: OsmData;
   updated_at: string;
-  user_edits: DrawingObject[];
+  user_edits: UserEditsPayload;
 };
 
 export type NormalizedProjectResult = {
@@ -36,13 +43,30 @@ export function normalizeSavedProject(value: unknown): NormalizedProjectResult |
     typeof project.updated_at !== "string" ||
     !isBoundingBox(project.bbox) ||
     !isOsmData(project.osm_data) ||
-    !Array.isArray(project.user_edits)
+    !isUserEditsPayload(project.user_edits)
   ) {
     return null;
   }
 
-  const userEdits = project.user_edits.filter(isDrawingObject);
+  if (Array.isArray(project.user_edits)) {
+    const userEdits = project.user_edits.filter(isDrawingObject);
 
+    return {
+      project: {
+        bbox: project.bbox,
+        created_at: project.created_at,
+        id: project.id,
+        name: project.name,
+        osm_data: project.osm_data,
+        updated_at: project.updated_at,
+        user_edits: userEdits
+      },
+      skippedDrawingCount: project.user_edits.length - userEdits.length
+    };
+  }
+
+  // Versioned drawing documents pass through untouched; entry-level parsing
+  // and legacy migration happen on load with a live projection converter.
   return {
     project: {
       bbox: project.bbox,
@@ -51,10 +75,14 @@ export function normalizeSavedProject(value: unknown): NormalizedProjectResult |
       name: project.name,
       osm_data: project.osm_data,
       updated_at: project.updated_at,
-      user_edits: userEdits
+      user_edits: project.user_edits
     },
-    skippedDrawingCount: project.user_edits.length - userEdits.length
+    skippedDrawingCount: 0
   };
+}
+
+function isUserEditsPayload(value: unknown): value is UserEditsPayload {
+  return Array.isArray(value) || isVersionedDrawingDocument(value);
 }
 
 function isBoundingBox(value: unknown): value is BoundingBox {

@@ -116,6 +116,38 @@ describe("saveProject validation", () => {
     );
   });
 
+  it("accepts a schemaVersion 1 userEdits document and stores it verbatim", async () => {
+    const document = {
+      metadata: { designBasis: "concept-only", locale: "IN" },
+      objects: [{ geometry: { point: { lat: 1, lng: 2 }, type: "Point" }, id: "s1", properties: { kind: "vehicle" }, type: "traffic-signal" }],
+      schemaVersion: 1
+    };
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("join project_state")) {
+        return Promise.resolve({
+          rows: [{ id: projectId, name: "My plan", bbox, created_at: new Date(), updated_at: new Date(), osm_data: {}, user_edits: document }],
+          rowCount: 1
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    const project = await saveProject(validBody({ userEdits: document }), userId);
+
+    expect(project?.user_edits).toEqual(document);
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("insert into project_state"),
+      expect.arrayContaining([JSON.stringify(document)])
+    );
+  });
+
+  it.each([
+    ["an unsupported schema version", { objects: [], schemaVersion: 2 }],
+    ["a versioned object without an objects array", { schemaVersion: 1 }]
+  ])("rejects %s as userEdits", async (_label, userEdits) => {
+    await expect(saveProject(validBody({ userEdits }), userId)).rejects.toThrow(/userEdits/);
+  });
+
   it("rejects a serialized project state larger than 6 MB", async () => {
     const oversizedEdit = {
       id: "oversized",

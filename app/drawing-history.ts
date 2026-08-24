@@ -1,4 +1,4 @@
-import type { DrawingObject } from "./satellite-overlay";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
 
 const maxHistoryEntries = 500;
 
@@ -10,18 +10,18 @@ const maxHistoryEntries = 500;
  * corrupt it, and simple enough to test exhaustively.
  */
 export type HistoryState = {
-  future: DrawingObject[][];
+  future: DrawingObjectV1[][];
   historyTruncated: boolean;
-  past: DrawingObject[][];
-  present: DrawingObject[];
+  past: DrawingObjectV1[][];
+  present: DrawingObjectV1[];
 };
 
 export type HistoryAction =
-  | { object: DrawingObject; type: "add" }
+  | { object: DrawingObjectV1; type: "add" }
   | { id: string; type: "remove" }
   | { type: "undo" }
   | { type: "redo" }
-  | { objects: DrawingObject[]; type: "replace-all" };
+  | { objects: DrawingObjectV1[]; type: "replace-all" };
 
 export const emptyHistoryState: HistoryState = {
   future: [],
@@ -111,7 +111,7 @@ export function canUndo(state: HistoryState) {
   return state.past.length > 0;
 }
 
-function pushPast(past: DrawingObject[][], present: DrawingObject[]) {
+function pushPast(past: DrawingObjectV1[][], present: DrawingObjectV1[]) {
   const next = [...past, present];
   return {
     past: next.slice(-maxHistoryEntries),

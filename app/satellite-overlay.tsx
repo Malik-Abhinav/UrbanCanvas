@@ -29,6 +29,19 @@ import {
   historyReducer
 } from "./drawing-history";
 import {
+  MIN_CROSSING_LENGTH_PX,
+  MIN_CROSSING_WIDTH_PX,
+  MIN_PATH_WIDTH_PX,
+  MIN_ROUNDABOUT_RADIUS_PX,
+  MIN_ROAD_WIDTH_PX,
+  createMigrationPixelsToMetres,
+  createPixelMetreConverter,
+  getLineObjectWidthMetres,
+  type PixelMetreConverter
+} from "./drawing-document-bridge";
+import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
+import {
   getClosestPointOnSegment,
   getDistance,
   getMapDistanceMeters,
@@ -37,11 +50,12 @@ import {
 } from "./canvas-geometry";
 
 type SatelliteOverlayProps = {
+  getMapZoom: () => number;
   height: number;
-  initialObjects: DrawingObject[];
+  initialObjects: DrawingObjectV1[];
   mapRevision: number;
   objectsRevision: number;
-  onObjectsChange: (objects: DrawingObject[]) => void;
+  onObjectsChange: (objects: DrawingObjectV1[]) => void;
   onMapPointToScreen: (point: MapPoint) => Point;
   onMapPan: (delta: Point) => void;
   onScreenPointToMap: (point: Point) => MapPoint;
@@ -67,10 +81,25 @@ type Point = {
   y: number;
 };
 
+declare global {
+  interface Window {
+    /** Fixtures-only test hook; never compiled into production bundles. */
+    __urbanCanvasE2eCanvasState?: () => {
+      objects: DrawingObjectV1[];
+      rendered: RenderedDrawingObject[];
+    };
+  }
+}
+
 type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
 
 type AnalysisMode = "idle" | "picking-path";
 
+/**
+ * Pointer interactions still create these legacy-shaped objects (pixels), but
+ * they are migrated to DrawingObjectV1 before entering component state, so the
+ * in-memory drawing is always the shared V1 model.
+ */
 export type DrawingObject =
   | {
       id: string;
@@ -99,15 +128,17 @@ export type DrawingObject =
 type RenderedDrawingObject =
   | {
       id: string;
-      type: "road" | "bike" | "sidewalk";
       points: number[];
-      snapped: boolean;
+      snapped?: boolean;
+      strokeWidth?: number;
+      type: "road" | "bike" | "sidewalk";
     }
   | {
-      id: string;
-      type: "crossing";
-      start: Point;
       end: Point;
+      id: string;
+      start: Point;
+      strokeWidth?: number;
+      type: "crossing";
     }
   | {
       center: Point;
@@ -221,6 +252,7 @@ const tools: Array<{
 ];
 
 export default function SatelliteOverlay({
+  getMapZoom,
   height,
   initialObjects,
   mapRevision,
@@ -255,11 +287,19 @@ export default function SatelliteOverlay({
 
     return { horizontalLines, verticalLines };
   }, [height, width]);
+  // The zoom is read lazily at render time through a ref so the converter's
+  // identity stays stable; map revision bumps re-run the dependent memos.
+  const getMapZoomRef = useRef(getMapZoom);
+  const converter = useMemo(
+    () => createPixelMetreConverter({ getZoom: () => getMapZoomRef.current() }),
+    []
+  );
+  const migrationPixelsToMetres = useMemo(() => createMigrationPixelsToMetres(converter), [converter]);
   const renderedObjects = useMemo(() => {
     void mapRevision;
 
-    return objects.map((object) => getRenderedObject(object, onMapPointToScreen));
-  }, [mapRevision, objects, onMapPointToScreen]);
+    return objects.map((object) => getRenderedObject(object, onMapPointToScreen, converter));
+  }, [converter, mapRevision, objects, onMapPointToScreen]);
   const projectedRoads = useMemo(() => {
     void mapRevision;
 
@@ -273,8 +313,8 @@ export default function SatelliteOverlay({
   const roundaboutSnaps = useMemo(() => {
     void mapRevision;
 
-    return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap);
-  }, [mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
+    return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap, converter);
+  }, [converter, mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
   const snapPreview = useMemo(() => {
     if (!draftStart || !draftEnd) {
       return null;
@@ -323,6 +363,23 @@ export default function SatelliteOverlay({
   useEffect(() => {
     initialObjectsRef.current = initialObjects;
   }, [initialObjects]);
+
+  useEffect(() => {
+    getMapZoomRef.current = getMapZoom;
+  }, [getMapZoom]);
+
+  // E2E fixture support: expose the live V1 objects and their rendered pixel
+  // geometry so tests can assert scale-dependent widths. The NODE_ENV check
+  // comes first so production builds eliminate this block entirely (the
+  // fixtures flag string must never appear in production bundles).
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1") {
+      window.__urbanCanvasE2eCanvasState = () => ({
+        objects,
+        rendered: renderedObjects
+      });
+    }
+  });
 
   useEffect(() => {
     dispatchHistory({ objects: initialObjectsRef.current, type: "replace-all" });
@@ -471,8 +528,18 @@ export default function SatelliteOverlay({
   }
 
   function pushObject(object: DrawingObject) {
-    dispatchHistory({ object, type: "add" });
-    setSelectedId(object.id);
+    // Migrate at the boundary: pointer output is legacy-shaped (pixels), but
+    // component state only ever holds shared-model DrawingObjectV1 objects.
+    const [migrated] = migrateLegacyDrawingArray([object], {
+      pixelsToMetres: migrationPixelsToMetres
+    }).document.objects;
+
+    if (!migrated) {
+      return;
+    }
+
+    dispatchHistory({ object: migrated, type: "add" });
+    setSelectedId(migrated.id);
   }
 
   function removeObject(id: string) {
@@ -919,6 +986,8 @@ function DrawingObjectShape({
   const selectionStroke = isSelected ? "#f5c542" : "transparent";
 
   if (object.type === "road") {
+    const roadWidth = object.strokeWidth ?? defaultRoadWidth;
+
     return (
       <Group opacity={opacity} onClick={onClick}>
         <Line
@@ -926,7 +995,7 @@ function DrawingObjectShape({
           lineJoin="round"
           points={object.points}
           stroke="#222729"
-          strokeWidth={defaultRoadWidth}
+          strokeWidth={roadWidth}
         />
         <Line
           dash={[12, 10]}
@@ -936,12 +1005,14 @@ function DrawingObjectShape({
           stroke="#d8d2c4"
           strokeWidth={2}
         />
-        {isSelected ? <SelectionLine points={object.points} width={defaultRoadWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={roadWidth + 7} /> : null}
       </Group>
     );
   }
 
   if (object.type === "bike") {
+    const bikeWidth = object.strokeWidth ?? bikeLaneWidth;
+
     return (
       <Group opacity={opacity} onClick={onClick}>
         <Line
@@ -949,7 +1020,7 @@ function DrawingObjectShape({
           lineJoin="round"
           points={object.points}
           stroke="#22c55e"
-          strokeWidth={bikeLaneWidth}
+          strokeWidth={bikeWidth}
         />
         <Line
           dash={[6, 7]}
@@ -959,12 +1030,14 @@ function DrawingObjectShape({
           stroke="#ddffe9"
           strokeWidth={1.5}
         />
-        {isSelected ? <SelectionLine points={object.points} width={bikeLaneWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={bikeWidth + 7} /> : null}
       </Group>
     );
   }
 
   if (object.type === "sidewalk") {
+    const pathWidth = object.strokeWidth ?? sidewalkWidth;
+
     return (
       <Group opacity={opacity} onClick={onClick}>
         <Line
@@ -972,26 +1045,35 @@ function DrawingObjectShape({
           lineJoin="round"
           points={object.points}
           stroke="#e5e7eb"
-          strokeWidth={sidewalkWidth}
+          strokeWidth={pathWidth}
         />
-        {isSelected ? <SelectionLine points={object.points} width={sidewalkWidth + 7} /> : null}
+        {isSelected ? <SelectionLine points={object.points} width={pathWidth + 7} /> : null}
       </Group>
     );
   }
 
   if (object.type === "crossing") {
     const { angle, length, midpoint } = getSegmentMetrics(object.start, object.end);
+    // Committed crossings carry a real-metre-derived width; drafts fall back
+    // to the previous fixed thickness.
+    const bodyHeight = Math.max(16, object.strokeWidth ?? 28);
+    const stripeHeight = bodyHeight - 4;
+    const stripeCount = Math.max(3, Math.min(8, Math.round(length / 14)));
+    const stripeOffsets = Array.from(
+      { length: stripeCount },
+      (_, index) => -length / 2 + (length * (index + 0.5)) / stripeCount
+    );
 
     return (
       <Group onClick={onClick} opacity={opacity} rotation={angle} x={midpoint.x} y={midpoint.y}>
-        <Rect fill="#1f2425" height={28} offsetX={length / 2} offsetY={14} width={length} />
-        {[-10, -2, 6].map((x) => (
-          <Rect fill="#f8fafc" height={24} key={x} offsetY={12} width={4} x={x} y={0} />
+        <Rect fill="#1f2425" height={bodyHeight} offsetX={length / 2} offsetY={bodyHeight / 2} width={length} />
+        {stripeOffsets.map((x) => (
+          <Rect fill="#f8fafc" height={stripeHeight} key={x} offsetY={stripeHeight / 2} width={4} x={x} y={0} />
         ))}
         <Rect
-          height={34}
+          height={bodyHeight + 6}
           offsetX={length / 2}
-          offsetY={17}
+          offsetY={(bodyHeight + 6) / 2}
           stroke={selectionStroke}
           strokeWidth={isSelected ? 2 : 0}
           width={length}
@@ -1227,9 +1309,10 @@ function getNearestRoadVertex(point: Point, roads: ProjectedRoad[]) {
 }
 
 function getRoundaboutSnapPoints(
-  objects: DrawingObject[],
+  objects: DrawingObjectV1[],
   projectMapPoint: (point: MapPoint) => Point,
-  unprojectScreenPoint: (point: Point) => MapPoint
+  unprojectScreenPoint: (point: Point) => MapPoint,
+  converter: PixelMetreConverter
 ) {
   const snapPoints: RoundaboutSnap[] = [];
 
@@ -1238,13 +1321,18 @@ function getRoundaboutSnapPoints(
       continue;
     }
 
-    const center = projectMapPoint(object.center);
+    const centerMap = object.geometry.point;
+    const center = projectMapPoint(centerMap);
+    const pixelRadius = Math.max(
+      MIN_ROUNDABOUT_RADIUS_PX,
+      converter.metresToPixels(object.properties.inscribedCircleDiameterMetres / 2, centerMap)
+    );
 
     for (let index = 0; index < 8; index += 1) {
       const angle = (Math.PI * 2 * index) / 8;
       const point = {
-        x: center.x + Math.cos(angle) * object.pixelRadius,
-        y: center.y + Math.sin(angle) * object.pixelRadius
+        x: center.x + Math.cos(angle) * pixelRadius,
+        y: center.y + Math.sin(angle) * pixelRadius
       };
 
       snapPoints.push({
@@ -1295,12 +1383,12 @@ function getRoadPathBetweenSnaps(start: RoadSnap, end: RoadSnap) {
   return path;
 }
 
-function buildGraphAnalysis(roads: OsmRoad[], objects: DrawingObject[]): GraphAnalysis {
+function buildGraphAnalysis(roads: OsmRoad[], objects: DrawingObjectV1[]): GraphAnalysis {
   const graph = new UndirectedGraph<RoadGraphNode, RoadGraphEdge>();
   const edges: RoadGraphEdge[] = [];
   const sidewalkPaths = objects
-    .filter((object): object is DrawingObject & { path: MapPoint[]; type: "sidewalk" } => object.type === "sidewalk")
-    .map((object) => object.path)
+    .filter((object): object is Extract<DrawingObjectV1, { type: "footpath" }> => object.type === "footpath")
+    .map((object) => object.geometry.points)
     .filter((path) => path.length >= 2);
 
   for (const road of roads) {
@@ -1467,51 +1555,70 @@ function formatDistance(distanceMeters: number) {
 }
 
 function getRenderedObject(
-  object: DrawingObject,
-  projectMapPoint: (point: MapPoint) => Point
+  object: DrawingObjectV1,
+  projectMapPoint: (point: MapPoint) => Point,
+  converter: PixelMetreConverter
 ): RenderedDrawingObject {
   if (object.type === "roundabout") {
-    const center = projectMapPoint(object.center);
+    const center = projectMapPoint(object.geometry.point);
 
     return {
       center,
       id: object.id,
-      radius: object.pixelRadius,
+      radius: Math.max(
+        MIN_ROUNDABOUT_RADIUS_PX,
+        converter.metresToPixels(object.properties.inscribedCircleDiameterMetres / 2, object.geometry.point)
+      ),
       type: "roundabout"
     };
   }
 
-  if (object.type === "signal") {
+  if (object.type === "traffic-signal") {
     return {
       id: object.id,
-      point: projectMapPoint(object.point),
+      point: projectMapPoint(object.geometry.point),
       type: "signal"
     };
   }
 
   if (object.type === "crossing") {
-    const start = projectMapPoint(object.anchor);
+    const anchor = object.geometry.point;
+    const start = projectMapPoint(anchor);
+    const { bearingDegrees, lengthMetres, widthMetres } = object.properties;
+    const lengthPx = Math.max(MIN_CROSSING_LENGTH_PX, converter.metresToPixels(lengthMetres, anchor));
+    // Bearing runs clockwise from north; screen y grows southwards.
+    const bearingRadians = (bearingDegrees * Math.PI) / 180;
+    const direction = { x: Math.sin(bearingRadians), y: -Math.cos(bearingRadians) };
 
     return {
       end: {
-        x: start.x + object.pixelVector.x,
-        y: start.y + object.pixelVector.y
+        x: start.x + direction.x * lengthPx,
+        y: start.y + direction.y * lengthPx
       },
       id: object.id,
       start,
+      strokeWidth: Math.max(MIN_CROSSING_WIDTH_PX, converter.metresToPixels(widthMetres, anchor)),
       type: "crossing"
     };
   }
 
+  const points = object.geometry.points;
+  const midAnchor = points[Math.floor(points.length / 2)] ?? points[0];
+  const widthPx = Math.max(
+    object.type === "road" ? MIN_ROAD_WIDTH_PX : MIN_PATH_WIDTH_PX,
+    converter.metresToPixels(getLineObjectWidthMetres(object), midAnchor)
+  );
+
   return {
     id: object.id,
-    points: object.path.flatMap((point) => {
+    points: points.flatMap((point) => {
       const projected = projectMapPoint(point);
 
       return [projected.x, projected.y];
     }),
-    snapped: object.snapped,
-    type: object.type
+    strokeWidth: widthPx,
+    // V1 cycleways/footpaths render with the established bike/sidewalk styles.
+    type: object.type === "cycleway" ? "bike" : object.type === "footpath" ? "sidewalk" : "road"
   };
 }
 

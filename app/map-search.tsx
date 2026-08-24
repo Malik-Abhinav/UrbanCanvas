@@ -11,7 +11,15 @@ import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
 import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
-import type { DrawingObject } from "./satellite-overlay";
+import {
+  createMigrationPixelsToMetres,
+  createPixelMetreConverter,
+  hashDrawingObjects,
+  parseStoredUserEdits,
+  toLegacyAnalysisEdits,
+  toUserEditsPayload
+} from "./drawing-document-bridge";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
 import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
@@ -141,8 +149,8 @@ export default function MapSearch() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("Untitled project");
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  const [projectObjects, setProjectObjects] = useState<DrawingObject[]>([]);
-  const [loadedProjectObjects, setLoadedProjectObjects] = useState<DrawingObject[]>([]);
+  const [projectObjects, setProjectObjects] = useState<DrawingObjectV1[]>([]);
+  const [loadedProjectObjects, setLoadedProjectObjects] = useState<DrawingObjectV1[]>([]);
   const [projectObjectsRevision, setProjectObjectsRevision] = useState(0);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [isSavingProject, setIsSavingProject] = useState(false);
@@ -157,7 +165,7 @@ export default function MapSearch() {
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
   const [lastAutoSaveFailed, setLastAutoSaveFailed] = useState(false);
 
-  const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
+  const handleObjectsChange = useCallback((objects: DrawingObjectV1[]) => {
     setProjectObjects(objects);
   }, []);
 
@@ -196,6 +204,21 @@ export default function MapSearch() {
     };
   }, [getToken]);
 
+  // Coalesce revision bumps to one per animation frame: "move" fires far more
+  // often than frames render, and every bump re-renders the workspace.
+  const attachMoveRevisionHandler = useCallback((map: Map) => {
+    map.on("move", () => {
+      if (moveFrameRef.current !== null) {
+        return;
+      }
+
+      moveFrameRef.current = window.requestAnimationFrame(() => {
+        moveFrameRef.current = null;
+        setMapRevision((current) => current + 1);
+      });
+    });
+  }, []);
+
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return;
@@ -204,6 +227,7 @@ export default function MapSearch() {
     if (fixturesEnabled) {
       const map = createE2eFixtureMap(mapContainerRef.current);
       mapRef.current = map;
+      attachMoveRevisionHandler(map);
       map.on("load", () => {
         setMapError(null);
         setIsMapLoaded(true);
@@ -265,16 +289,7 @@ export default function MapSearch() {
     });
     // Coalesce revision bumps to one per animation frame: "move" fires far
     // more often than frames render, and every bump re-renders the workspace.
-    map.on("move", () => {
-      if (moveFrameRef.current !== null) {
-        return;
-      }
-
-      moveFrameRef.current = window.requestAnimationFrame(() => {
-        moveFrameRef.current = null;
-        setMapRevision((current) => current + 1);
-      });
-    });
+    attachMoveRevisionHandler(map);
 
     const resizeObserver = new ResizeObserver(() => {
       map.resize();
@@ -303,7 +318,7 @@ export default function MapSearch() {
       markerRef.current = null;
       setIsMapLoaded(false);
     };
-  }, []);
+  }, [attachMoveRevisionHandler]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -638,6 +653,7 @@ export default function MapSearch() {
 
     const signature = getProjectSaveSignature({
       bbox: selectedBounds,
+      contentHash: hashDrawingObjects(projectObjects),
       name: projectName,
       osmDataId: getOsmDataId(osmData),
       userEdits: projectObjects
@@ -666,7 +682,7 @@ export default function MapSearch() {
           id: projectId,
           name: projectName,
           osmData,
-          userEdits: projectObjects
+          userEdits: toUserEditsPayload(projectObjects)
         })
       });
       const payload = await readApiJson<ProjectResponse>(response);
@@ -791,6 +807,15 @@ export default function MapSearch() {
         throw new Error("Saved project data is incomplete or corrupted.");
       }
       const { project, skippedDrawingCount } = normalized;
+      // Stored payloads may be legacy arrays or versioned documents; both are
+      // parsed into V1 objects here, with legacy pixel measurements converted
+      // through the live map projection.
+      const parsedEdits = parseStoredUserEdits(project.user_edits, {
+        pixelsToMetres: createMigrationPixelsToMetres(
+          createPixelMetreConverter({ getZoom: () => map.getZoom() })
+        )
+      });
+      const skippedCount = skippedDrawingCount + parsedEdits.skippedCount;
 
       setCurrentProjectId(project.id);
       pendingProjectIdRef.current = null;
@@ -803,17 +828,18 @@ export default function MapSearch() {
       setIsSelectingArea(false);
       setIsAreaConfirmed(true);
       setOverlayBox(null);
-      setProjectObjects(project.user_edits);
-      setLoadedProjectObjects(project.user_edits);
+      setProjectObjects(parsedEdits.objects);
+      setLoadedProjectObjects(parsedEdits.objects);
       setProjectObjectsRevision((current) => current + 1);
       setChangeAnalysis(null);
       setAnalysisMessage(null);
       setLastAutoSaveFailed(false);
       lastSavedSignatureRef.current = getProjectSaveSignature({
         bbox: project.bbox,
+        contentHash: hashDrawingObjects(parsedEdits.objects),
         name: project.name,
         osmDataId: getOsmDataId(project.osm_data),
-        userEdits: project.user_edits
+        userEdits: parsedEdits.objects
       });
       disableMapInteractions(map);
       syncSelectionLayer(map, null);
@@ -834,8 +860,8 @@ export default function MapSearch() {
         setOverlayBox(getOverlayBoxFromBounds(map, project.bbox));
       });
       setProjectMessage(
-        skippedDrawingCount > 0
-          ? `Project loaded with ${skippedDrawingCount} invalid drawing${skippedDrawingCount === 1 ? "" : "s"} skipped.`
+        skippedCount > 0
+          ? `Project loaded with ${skippedCount} invalid drawing${skippedCount === 1 ? "" : "s"} skipped.`
           : "Project loaded."
       );
     } catch (loadError) {
@@ -860,7 +886,7 @@ export default function MapSearch() {
           bbox: selectedBounds,
           osmData,
           projectName,
-          userEdits: projectObjects
+          userEdits: toLegacyAnalysisEdits(projectObjects)
         })
       });
       const payload = await readApiJson<AnalysisResponse>(response);
@@ -1379,6 +1405,7 @@ export default function MapSearch() {
               }}
             >
               <SatelliteOverlay
+                getMapZoom={() => mapRef.current?.getZoom() ?? 12}
                 height={overlayBox.height}
                 initialObjects={loadedProjectObjects}
                 mapRevision={mapRevision}
@@ -1519,17 +1546,21 @@ function formatProjectDate(value: string) {
 
 function getProjectSaveSignature({
   bbox,
+  contentHash,
   name,
   osmDataId,
   userEdits
 }: {
   bbox: BoundingBox;
+  contentHash: string;
   name: string;
   osmDataId: string;
-  userEdits: DrawingObject[];
+  userEdits: DrawingObjectV1[];
 }) {
   // The OSM payload is immutable once fetched for a selection, so its
   // identity (bbox + counts) stands in for hashing megabytes of geometry.
+  // The drawings contribute a content hash so property or geometry changes
+  // (not just adds/removes) trigger autosave.
   return [
     bbox.north,
     bbox.south,
@@ -1538,7 +1569,7 @@ function getProjectSaveSignature({
     name,
     osmDataId,
     userEdits.length,
-    userEdits.map((object) => object.id).join(",")
+    contentHash
   ].join("|");
 }
 
