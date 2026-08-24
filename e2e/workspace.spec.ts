@@ -41,6 +41,8 @@ function savedProject(userEdits: unknown[] = []) {
   };
 }
 
+const osmEndpoint = "http://localhost:3001/api/osm";
+
 test("workspace reaches deterministic map and selection readiness", async ({ page }) => {
   const fixture = await installApiFixtures(page);
   await page.goto("/");
@@ -141,5 +143,83 @@ test("loading mixed drawing entries recovers valid drawings and warns about skip
   await expect(page.getByText("Project loaded with 1 invalid drawing skipped.")).toBeVisible();
   await expect(page.getByRole("region", { name: "Drawing canvas overlay" })).toBeVisible();
   await expect(page.getByText("OSM data stored")).toBeVisible();
+  expect(fixture.blockedRequests).toEqual([]);
+});
+
+test("rate-limited OSM fetch counts down then retries the same confirmed bounds", async ({ page }) => {
+  const fixture = await installApiFixtures(page);
+  const osmBodies: Array<{ bbox?: { north: number; south: number; east: number; west: number } }> = [];
+
+  // Registered after installApiFixtures, so this route wins for the OSM endpoint.
+  await page.route(osmEndpoint, async (route) => {
+    const request = route.request();
+    const body = request.postDataJSON() as { bbox?: { north: number; south: number; east: number; west: number } };
+    osmBodies.push(body);
+
+    if (osmBodies.length === 1) {
+      await route.fulfill({
+        contentType: "application/json",
+        headers: {
+          "access-control-expose-headers": "retry-after",
+          "retry-after": "3"
+        },
+        status: 429,
+        body: JSON.stringify({ status: "error", message: "Too many requests." })
+      });
+      return;
+    }
+
+    const bbox = body.bbox!;
+    await route.fulfill({
+      contentType: "application/json",
+      status: 200,
+      body: JSON.stringify({
+        status: "ok",
+        data: {
+          bbox,
+          buildings: [],
+          counts: { buildings: 0, openLand: 0, roads: 1 },
+          openLand: [],
+          roads: [
+            {
+              geometry: [
+                { lat: bbox.south, lng: bbox.west },
+                { lat: bbox.north, lng: bbox.east }
+              ],
+              id: 2001,
+              kind: "residential",
+              tags: { highway: "residential" }
+            }
+          ]
+        }
+      })
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("Loading satellite map...")).toBeVisible();
+  await page.evaluate(() => window.__releaseUrbanCanvasE2eMap?.());
+  const selectArea = page.getByRole("button", { name: "Select Area" });
+  await expect(selectArea).toBeEnabled();
+  await selectArea.click();
+
+  const mapCanvas = page.getByRole("region", { name: "Map canvas" });
+  const box = await mapCanvas.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width * 0.25, box!.y + box!.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width * 0.45, box!.y + box!.height * 0.48, { steps: 4 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: "Confirm Area" }).click();
+
+  const retryButton = page.getByRole("button", { name: /^Retry OSM in [1-3]s$/ });
+  await expect(page.getByRole("alert").filter({ hasText: "Too many requests." })).toContainText("Too many requests.");
+  await expect(retryButton).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Retry OSM" })).toBeEnabled();
+  await page.getByRole("button", { name: "Retry OSM" }).click();
+
+  await expect(page.getByText("OSM data stored")).toBeVisible();
+  expect(osmBodies).toHaveLength(2);
+  expect(osmBodies[1]).toEqual(osmBodies[0]);
   expect(fixture.blockedRequests).toEqual([]);
 });
