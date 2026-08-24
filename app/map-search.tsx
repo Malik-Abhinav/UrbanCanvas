@@ -11,6 +11,14 @@ import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
 import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
+import LayersPanel from "./components/workspace/layers-panel";
+import {
+  createLayerSettings,
+  setContextOpacity,
+  setProposalOpacity,
+  toggleLayer,
+  type LayerSettings
+} from "./layer-semantics";
 import {
   createMigrationPixelsToMetres,
   createPixelMetreConverter,
@@ -160,6 +168,7 @@ export default function MapSearch() {
   const [isAnalyzingChanges, setIsAnalyzingChanges] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [layerSettings, setLayerSettings] = useState<LayerSettings>(createLayerSettings);
   const [error, setError] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
@@ -175,6 +184,16 @@ export default function MapSearch() {
       setMapRevision((current) => current + 1);
     }, 260);
   }, [isSidebarCollapsed]);
+
+  // Satellite toggle fades the Mapbox raster; the canvas overlay stays crisp
+  // so proposals remain readable even with imagery hidden.
+  useEffect(() => {
+    const container = mapContainerRef.current;
+
+    if (container) {
+      container.style.opacity = layerSettings.visible.satellite ? "1" : "0.12";
+    }
+  }, [isAreaConfirmed, layerSettings.visible.satellite]);
 
   useEffect(() => {
     if (osmRetryAvailableAt === null) {
@@ -1053,6 +1072,20 @@ export default function MapSearch() {
           </div>
 
           <div className={isSidebarCollapsed ? "hidden" : "block"}>
+          {isAreaConfirmed ? (
+            <div className="mt-6">
+              <LayersPanel
+                onContextOpacityChange={(value) =>
+                  setLayerSettings((current) => setContextOpacity(current, value))
+                }
+                onLayerToggle={(id) => setLayerSettings((current) => toggleLayer(current, id))}
+                onProposalOpacityChange={(value) =>
+                  setLayerSettings((current) => setProposalOpacity(current, value))
+                }
+                settings={layerSettings}
+              />
+            </div>
+          ) : null}
           <form className="mt-8" onSubmit={handleSearch}>
             <label className="text-sm font-medium text-white/75" htmlFor="location-search">
               Search location
@@ -1408,6 +1441,7 @@ export default function MapSearch() {
                 getMapZoom={() => mapRef.current?.getZoom() ?? 12}
                 height={overlayBox.height}
                 initialObjects={loadedProjectObjects}
+                layerSettings={layerSettings}
                 mapRevision={mapRevision}
                 objectsRevision={projectObjectsRevision}
                 onObjectsChange={handleObjectsChange}
