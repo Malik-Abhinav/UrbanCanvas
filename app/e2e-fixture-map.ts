@@ -2,7 +2,10 @@ import type { Map } from "mapbox-gl";
 
 declare global {
   interface Window {
+    /** Fixtures-only test hook; never compiled into production bundles. */
     __releaseUrbanCanvasE2eMap?: () => void;
+    /** Fixtures-only test hook: change the simulated map zoom (emits "move"). */
+    __setUrbanCanvasE2eMapZoom?: (zoom: number) => void;
   }
 }
 
@@ -19,6 +22,7 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
   const onceListeners = new globalThis.Map<string, () => void>();
   const pendingTimers = new Set<number>();
   let styleLoaded = false;
+  let currentZoom = 12;
   const scale = 0.00002;
 
   const getSize = () => ({
@@ -79,7 +83,7 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
       return sources.get(id);
     },
     getZoom() {
-      return 12;
+      return currentZoom;
     },
     isStyleLoaded() {
       return styleLoaded;
@@ -131,6 +135,12 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
   };
 
   window.__releaseUrbanCanvasE2eMap = releaseInitialLoad;
+  window.__setUrbanCanvasE2eMapZoom = (zoom: number) => {
+    currentZoom = zoom;
+    // Mirrors the real map: zoom changes fire "move", which the workspace
+    // coalesces into a map revision bump.
+    emit("move");
+  };
 
   return fixtureMap as unknown as Map;
 }

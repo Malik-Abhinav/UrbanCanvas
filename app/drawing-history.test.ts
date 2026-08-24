@@ -5,10 +5,15 @@ import {
   emptyHistoryState,
   historyReducer
 } from "./drawing-history";
-import type { DrawingObject } from "./satellite-overlay";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
 
-function signal(id: string): DrawingObject {
-  return { id, point: { lat: 28.61, lng: 77.21 }, type: "signal" };
+function signal(id: string): DrawingObjectV1 {
+  return {
+    geometry: { point: { lat: 28.61, lng: 77.21 }, type: "Point" },
+    id,
+    properties: { kind: "vehicle" },
+    type: "traffic-signal"
+  };
 }
 
 describe("historyReducer", () => {

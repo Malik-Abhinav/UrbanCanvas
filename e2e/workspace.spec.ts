@@ -124,10 +124,24 @@ test("deleting the active saved project keeps its area, OSM data, drawings, and 
 
   await page.getByRole("button", { name: "Save Project" }).click();
   await expect(page.getByText("Project saved.")).toBeVisible();
+
+  // Drawings persist as the schemaVersion 1 document envelope, migrated from
+  // the loaded legacy signal.
   expect(fixture.postBodies[0]).toMatchObject({
     bbox: fixtureBbox,
     osmData: createOsmData(),
-    userEdits: [signal]
+    userEdits: {
+      metadata: { designBasis: "concept-only", locale: "IN" },
+      objects: [
+        {
+          geometry: { point: { lat: 28.61, lng: 77.21 }, type: "Point" },
+          id: "signal-1",
+          properties: { kind: "vehicle" },
+          type: "traffic-signal"
+        }
+      ],
+      schemaVersion: 1
+    }
   });
   expect(fixture.blockedRequests).toEqual([]);
 });
@@ -221,5 +235,117 @@ test("rate-limited OSM fetch counts down then retries the same confirmed bounds"
   await expect(page.getByText("OSM data stored")).toBeVisible();
   expect(osmBodies).toHaveLength(2);
   expect(osmBodies[1]).toEqual(osmBodies[0]);
+  expect(fixture.blockedRequests).toEqual([]);
+});
+
+type CanvasState = {
+  objects: Array<{
+    geometry: { points?: Array<{ lat: number; lng: number }>; type: string };
+    id: string;
+    properties: { laneWidthMetres: number; lanes: number };
+    type: string;
+  }>;
+  rendered: Array<{ id: string; strokeWidth?: number; type: string }>;
+};
+
+// Mirrors app/drawing-document-bridge metresPerPixelAt + MIN_ROAD_WIDTH_PX.
+function expectedRoadWidthPx(lat: number, zoom: number) {
+  const metresPerPixel = (156543.03392 * Math.cos((lat * Math.PI) / 180)) / 2 ** zoom;
+
+  return Math.max(4, 7 / metresPerPixel);
+}
+
+async function readCanvasState(page: import("@playwright/test").Page): Promise<CanvasState> {
+  return page.evaluate(() => window.__urbanCanvasE2eCanvasState?.()) as Promise<CanvasState>;
+}
+
+test("a drawn road renders with scale-dependent width and persists through save and reload", async ({ page }) => {
+  const fixture = await installApiFixtures(page);
+  await releaseMap(page);
+
+  // Select most of the map canvas: the drawing overlay mirrors this rectangle,
+  // and a wide overlay keeps the analysis panel clear of the drawing tools.
+  await page.getByRole("button", { name: "Select Area" }).click();
+  const mapCanvas = page.getByRole("region", { name: "Map canvas" });
+  const canvasBox = await mapCanvas.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  await page.mouse.move(canvasBox!.x + canvasBox!.width * 0.1, canvasBox!.y + canvasBox!.height * 0.08);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox!.x + canvasBox!.width * 0.9, canvasBox!.y + canvasBox!.height * 0.9, { steps: 4 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: "Confirm Area" }).click();
+  await expect(page.getByText("OSM data stored")).toBeVisible();
+  await page.getByLabel("Project name").fill("Scale plan");
+
+  // Draw at a high simulated zoom: the default road (2 lanes x 3.5 m) is well
+  // above the minimum pixel floor there.
+  await page.evaluate(() => window.__setUrbanCanvasE2eMapZoom?.(18));
+  await page.getByRole("button", { name: "Road / Lane" }).click();
+  const overlay = page.getByRole("region", { name: "Drawing canvas overlay" });
+  const box = await overlay.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + box!.width * 0.35, box!.y + box!.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width * 0.6, box!.y + box!.height * 0.55, { steps: 4 });
+  await page.mouse.up();
+
+  let state: CanvasState | undefined;
+  await expect
+    .poll(async () => {
+      state = await readCanvasState(page);
+
+      return state?.objects.length ?? 0;
+    })
+    .toBe(1);
+  const road = state!.objects[0];
+  expect(road.type).toBe("road");
+  expect(road.geometry.type).toBe("LineString");
+  expect(road.geometry.points).toHaveLength(2);
+  expect(road.properties).toMatchObject({ laneWidthMetres: 3.5, lanes: 2 });
+
+  const anchorLat = road.geometry.points![1].lat;
+  const renderedRoad = state!.rendered.find((object) => object.id === road.id);
+  expect(renderedRoad?.strokeWidth).toBeCloseTo(expectedRoadWidthPx(anchorLat, 18), 5);
+
+  await page.getByRole("button", { name: "Save Project" }).click();
+  await expect(page.getByText("Project saved.")).toBeVisible();
+
+  // The saved payload is the schemaVersion 1 document with real properties.
+  expect(fixture.postBodies[0].userEdits).toMatchObject({
+    metadata: { locale: "IN" },
+    objects: [{ geometry: { type: "LineString" }, id: road.id, properties: { lanes: 2 }, type: "road" }],
+    schemaVersion: 1
+  });
+
+  // Reload the app and load the saved project back.
+  await releaseMap(page);
+  await page.getByRole("button", { name: /Scale plan Updated/ }).click();
+  await expect(page.getByText("Project loaded.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Drawing canvas overlay" })).toBeVisible();
+
+  // A different zoom must re-derive the width from the stored metres.
+  await page.evaluate(() => window.__setUrbanCanvasE2eMapZoom?.(17));
+  let reloaded: CanvasState | undefined;
+  await expect
+    .poll(async () => {
+      reloaded = await readCanvasState(page);
+
+      return reloaded.objects.map((object) => object.id).join(",");
+    })
+    .toBe(road.id);
+  expect(reloaded!.objects[0].geometry.points).toEqual(road.geometry.points);
+  const reloadedLat = reloaded!.objects[0].geometry.points![1].lat;
+  expect(reloadedLat).toBeCloseTo(anchorLat, 9);
+  await expect
+    .poll(async () => (await readCanvasState(page)).rendered.find((object) => object.id === road.id)?.strokeWidth)
+    .toBeCloseTo(expectedRoadWidthPx(anchorLat, 17), 5);
+  // Widths at z17 and z18 differ, proving pixels are derived from metres.
+  expect(expectedRoadWidthPx(anchorLat, 17)).not.toBeCloseTo(expectedRoadWidthPx(anchorLat, 18), 3);
+
+  // Zoom far out: the real-metre width drops below the visibility floor.
+  await page.evaluate(() => window.__setUrbanCanvasE2eMapZoom?.(12));
+  await expect
+    .poll(async () => (await readCanvasState(page)).rendered.find((object) => object.id === road.id)?.strokeWidth)
+    .toBe(4);
   expect(fixture.blockedRequests).toEqual([]);
 });

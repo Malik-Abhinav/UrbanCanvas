@@ -28,7 +28,45 @@ function validProject(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const v1Document = {
+  metadata: {
+    designBasis: "concept-only",
+    disclaimer:
+      "For early concept design only; values are India-tilted starting assumptions, not a claim of compliance or a substitute for applicable standards, surveys, engineering review, or authority approval.",
+    locale: "IN"
+  },
+  objects: [
+    {
+      geometry: {
+        point: { lat: 28.61, lng: 77.21 },
+        type: "Point"
+      },
+      id: "signal-1",
+      properties: { kind: "vehicle" },
+      type: "traffic-signal"
+    }
+  ],
+  schemaVersion: 1
+};
+
 describe("normalizeSavedProject", () => {
+  it("passes through a schemaVersion 1 userEdits document untouched", () => {
+    const result = normalizeSavedProject(validProject({ user_edits: v1Document }));
+
+    expect(result).toEqual({
+      project: expect.objectContaining({ user_edits: v1Document }),
+      skippedDrawingCount: 0
+    });
+  });
+
+  it.each([
+    ["an unsupported document version", { ...v1Document, schemaVersion: 2 }],
+    ["a document without an objects array", { ...v1Document, objects: "all" }],
+    ["a bare versioned object", { schemaVersion: 1 }]
+  ])(("rejects %s as unrecoverable"), (_label, payload) => {
+    expect(normalizeSavedProject(validProject({ user_edits: payload }))).toBeNull();
+  });
+
   it("keeps valid drawings and reports malformed drawing entries", () => {
     const result = normalizeSavedProject(
       validProject({
