@@ -17,8 +17,8 @@ type ProjectStateRow = ProjectRow & {
 };
 
 const maxProjectNameLength = 80;
-const maxUserEdits = 500;
 const maxProjectAreaKm2 = 5;
+const maxProjectStateBytes = 6 * 1024 * 1024;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function listProjects(userId: string) {
@@ -65,6 +65,12 @@ export async function saveProject(input: unknown, userId: string) {
 
   const project = parseProjectInput(input);
   const id = project.id ?? randomUUID();
+  const osmDataJson = JSON.stringify(project.osmData);
+  const userEditsJson = JSON.stringify(project.userEdits);
+
+  if (Buffer.byteLength(osmDataJson) + Buffer.byteLength(userEditsJson) > maxProjectStateBytes) {
+    throw new Error("Project map data and drawing edits must be 6 MB or smaller.");
+  }
 
   await pool!.query("begin");
 
@@ -75,6 +81,7 @@ export async function saveProject(input: unknown, userId: string) {
           update projects
           set name = $3, bbox = $4, updated_at = now()
           where id = $1 and user_id = $2
+            and (char_length($3) <= 80 or name = $3)
         `,
         [id, userId, project.name, JSON.stringify(project.bbox)]
       );
@@ -100,7 +107,7 @@ export async function saveProject(input: unknown, userId: string) {
           osm_data = excluded.osm_data,
           user_edits = excluded.user_edits
       `,
-      [id, JSON.stringify(project.osmData), JSON.stringify(project.userEdits)]
+      [id, osmDataJson, userEditsJson]
     );
 
     await pool!.query("commit");
@@ -179,12 +186,13 @@ function parseProjectInput(input: unknown) {
 
   const body = input as Record<string, unknown>;
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  const id = parseProjectId(body.id);
 
   if (!name) {
     throw new Error("Project name is required.");
   }
 
-  if (name.length > maxProjectNameLength) {
+  if (!id && name.length > maxProjectNameLength) {
     throw new Error(`Project name must be ${maxProjectNameLength} characters or fewer.`);
   }
 
@@ -198,13 +206,9 @@ function parseProjectInput(input: unknown) {
     throw new Error("Project userEdits must be an array.");
   }
 
-  if (body.userEdits.length > maxUserEdits) {
-    throw new Error(`Projects are limited to ${maxUserEdits} drawing edits.`);
-  }
-
   return {
     bbox: body.bbox as BoundingBox,
-    id: parseProjectId(body.id),
+    id,
     name,
     osmData: body.osmData,
     userEdits: body.userEdits

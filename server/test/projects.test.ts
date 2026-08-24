@@ -35,8 +35,29 @@ describe("saveProject validation", () => {
     await expect(saveProject(validBody({ name: "   " }), userId)).rejects.toThrow(/name is required/i);
   });
 
-  it("rejects names longer than 80 characters", async () => {
-    await expect(saveProject(validBody({ name: "x".repeat(81) }), userId)).rejects.toThrow(/80 characters/);
+  it("rejects a new project name longer than the editing affordance", async () => {
+    await expect(saveProject(validBody({ name: "x".repeat(81) }), userId)).rejects.toThrow(/80 characters/i);
+  });
+
+  it("saves an existing legacy project name longer than the editing affordance", async () => {
+    const legacyName = "Legacy neighborhood plan ".repeat(5);
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("join project_state")) {
+        return Promise.resolve({
+          rows: [{ id: projectId, name: legacyName, bbox, created_at: new Date(), updated_at: new Date(), osm_data: {}, user_edits: [] }],
+          rowCount: 1
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    const project = await saveProject(validBody({ id: projectId, name: legacyName }), userId);
+
+    expect(project?.name).toBe(legacyName);
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("char_length($3) <= 80 or name = $3"),
+      [projectId, userId, legacyName.trim(), JSON.stringify(bbox)]
+    );
   });
 
   it("rejects non-UUID ids", async () => {
@@ -68,10 +89,35 @@ describe("saveProject validation", () => {
     ).rejects.toThrow(/5 km2/);
   });
 
-  it("rejects more than 500 user edits", async () => {
-    await expect(
-      saveProject(validBody({ userEdits: Array.from({ length: 501 }, (_, i) => ({ id: String(i), type: "signal" })) }), userId)
-    ).rejects.toThrow(/500 drawing edits/);
+  it("accepts 501 user edits within the request body limit", async () => {
+    const edits = Array.from({ length: 501 }, (_, i) => ({ id: String(i), type: "signal" }));
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes("join project_state")) {
+        return Promise.resolve({
+          rows: [{ id: projectId, name: "My plan", bbox, created_at: new Date(), updated_at: new Date(), osm_data: {}, user_edits: edits }],
+          rowCount: 1
+        });
+      }
+      return Promise.resolve({ rows: [], rowCount: 1 });
+    });
+
+    const project = await saveProject(validBody({ userEdits: edits }), userId);
+
+    expect(project?.user_edits).toHaveLength(501);
+    expect(queryMock).toHaveBeenCalledWith(
+      expect.stringContaining("insert into project_state"),
+      expect.arrayContaining([JSON.stringify(edits)])
+    );
+  });
+
+  it("rejects a serialized project state larger than 6 MB", async () => {
+    const oversizedEdit = {
+      id: "oversized",
+      note: "x".repeat(6 * 1024 * 1024),
+      type: "signal"
+    };
+
+    await expect(saveProject(validBody({ userEdits: [oversizedEdit] }), userId)).rejects.toThrow(/6 MB/i);
   });
 
   it("rejects non-finite bbox coordinates", async () => {

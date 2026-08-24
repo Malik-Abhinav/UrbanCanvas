@@ -647,6 +647,16 @@ export default function SatelliteOverlay({
         >
           <RotateCw size={18} />
         </button>
+        {history.historyTruncated ? (
+          <span
+            aria-label="Undo history limit reached. The latest 500 changes remain undoable; older changes cannot be undone."
+            className="w-10 rounded border border-[#f5c542]/40 bg-[#f5c542]/10 px-1 py-1 text-center text-[9px] font-semibold leading-tight text-[#ffe6a1]"
+            role="status"
+            title="The latest 500 changes remain undoable; older changes cannot be undone."
+          >
+            500 max
+          </span>
+        ) : null}
       </div>
 
       {hoveredTool ? (

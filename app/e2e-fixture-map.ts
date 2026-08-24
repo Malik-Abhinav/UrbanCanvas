@@ -1,5 +1,11 @@
 import type { Map } from "mapbox-gl";
 
+declare global {
+  interface Window {
+    __releaseUrbanCanvasE2eMap?: () => void;
+  }
+}
+
 const delhiCenter: [number, number] = [77.209, 28.6139];
 
 export function createE2eFixtureMap(container: HTMLDivElement): Map {
@@ -9,8 +15,10 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
   };
   const sources = new globalThis.Map<string, { setData: (data: unknown) => void }>();
   const layers = new Set<string>();
+  const listeners = new globalThis.Map<string, Set<() => void>>();
   const onceListeners = new globalThis.Map<string, () => void>();
   const pendingTimers = new Set<number>();
+  let styleLoaded = false;
   const scale = 0.00002;
 
   const getSize = () => ({
@@ -25,6 +33,20 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
       callback?.();
     }, 0);
     pendingTimers.add(timer);
+  };
+  const emit = (event: string) => {
+    for (const callback of listeners.get(event) ?? []) {
+      callback();
+    }
+  };
+  const releaseInitialLoad = () => {
+    if (styleLoaded) {
+      return;
+    }
+    styleLoaded = true;
+    emit("styledata");
+    emit("load");
+    emit("idle");
   };
 
   const fixtureMap = {
@@ -60,11 +82,17 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
       return 12;
     },
     isStyleLoaded() {
-      return true;
+      return styleLoaded;
     },
     keyboard: interactions,
     loaded() {
-      return true;
+      return styleLoaded;
+    },
+    on(event: string, callback: () => void) {
+      const eventListeners = listeners.get(event) ?? new Set<() => void>();
+      eventListeners.add(callback);
+      listeners.set(event, eventListeners);
+      return fixtureMap;
     },
     once(event: string, callback: () => void) {
       onceListeners.set(event, callback);
@@ -84,7 +112,11 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
         window.clearTimeout(timer);
       }
       pendingTimers.clear();
+      listeners.clear();
       onceListeners.clear();
+      if (window.__releaseUrbanCanvasE2eMap === releaseInitialLoad) {
+        delete window.__releaseUrbanCanvasE2eMap;
+      }
     },
     resize() {},
     scrollZoom: interactions,
@@ -97,6 +129,8 @@ export function createE2eFixtureMap(container: HTMLDivElement): Map {
       };
     }
   };
+
+  window.__releaseUrbanCanvasE2eMap = releaseInitialLoad;
 
   return fixtureMap as unknown as Map;
 }

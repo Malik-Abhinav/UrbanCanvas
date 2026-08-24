@@ -96,14 +96,47 @@ describe("historyReducer", () => {
     expect(canUndo(state)).toBe(false);
   });
 
-  it("bounds memory by capping stored snapshots", () => {
+  it("fully undoes and redoes a 500-edit drawing session", () => {
     let state = emptyHistoryState;
 
-    for (let index = 0; index < 80; index += 1) {
+    for (let index = 0; index < 500; index += 1) {
       state = historyReducer(state, { object: signal(`s${index}`), type: "add" });
     }
 
-    expect(state.past.length).toBeLessThanOrEqual(50);
-    expect(state.present).toHaveLength(80);
+    expect(state.present).toHaveLength(500);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "undo" });
+    }
+
+    expect(state.present).toEqual([]);
+    expect(canUndo(state)).toBe(false);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "redo" });
+    }
+
+    expect(state.present).toHaveLength(500);
+    expect(state.present.map((object) => object.id)).toEqual(
+      Array.from({ length: 500 }, (_, index) => `s${index}`)
+    );
+    expect(canRedo(state)).toBe(false);
+  });
+
+  it("caps retained snapshots at 500 and reports when older history was dropped", () => {
+    let state = emptyHistoryState;
+
+    for (let index = 0; index < 501; index += 1) {
+      state = historyReducer(state, { object: signal(`s${index}`), type: "add" });
+    }
+
+    expect(state.past).toHaveLength(500);
+    expect(state.historyTruncated).toBe(true);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "undo" });
+    }
+
+    expect(state.present.map((object) => object.id)).toEqual(["s0"]);
   });
 });

@@ -92,10 +92,22 @@ test("workspace reaches deterministic map and selection readiness", async ({ pag
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Map workspace" })).toBeVisible();
-  await expect(page.getByText("Loading satellite map...")).toBeHidden();
-  await expect(page.getByRole("heading", { name: "Mapbox token needed" })).toBeHidden();
+
+  const projectName = page.getByLabel("Project name");
+  await expect(projectName).toHaveAttribute("maxlength", "80");
+  await expect(page.getByText("16 / 80 characters")).toBeVisible();
+  await projectName.fill("x".repeat(80));
+  await expect(projectName).toHaveAccessibleDescription("80 / 80 characters");
 
   const selectArea = page.getByRole("button", { name: "Select Area" });
+  await expect(page.getByText("Loading satellite map...")).toBeVisible();
+  await expect(selectArea).toBeDisabled();
+  await expect(selectArea).toHaveAccessibleDescription("Wait for the satellite map to finish loading before selecting an area.");
+
+  await page.evaluate(() => window.__releaseUrbanCanvasE2eMap?.());
+  await expect(page.getByText("Loading satellite map...")).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Mapbox token needed" })).toBeHidden();
+  await expect(selectArea).toBeEnabled();
   await selectArea.click();
   await expect(page.getByRole("button", { name: "Selecting..." })).toHaveAttribute("aria-pressed", "true");
 

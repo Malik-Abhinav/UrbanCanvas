@@ -221,7 +221,7 @@ function describeCount(count: number, label: string) {
 }
 
 const maxProjectNameLength = 80;
-const maxUserEdits = 500;
+const maxAnalysisEdits = 10_000;
 
 function parseAnalysisInput(input: unknown): AnalysisInput {
   if (!input || typeof input !== "object") {
@@ -242,8 +242,8 @@ function parseAnalysisInput(input: unknown): AnalysisInput {
     throw new Error("Analysis userEdits must be an array.");
   }
 
-  if (body.userEdits.length > maxUserEdits) {
-    throw new Error(`Analysis supports at most ${maxUserEdits} drawing edits.`);
+  if (body.userEdits.length > maxAnalysisEdits) {
+    throw new Error(`Analysis supports at most ${maxAnalysisEdits.toLocaleString("en-US")} drawing edits.`);
   }
 
   let projectName: string | undefined;
