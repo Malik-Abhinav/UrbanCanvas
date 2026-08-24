@@ -6,7 +6,12 @@ services:
     buildCommand: npm ci && npm run build:api
     startCommand: npm run start:api
     healthCheckPath: /api/health
+    # Pin Node >=20.9.0 (required by the sharp@0.35.0 override and satisfied by
+    # next@15.5.21); mirrors the "engines" field in package.json so deploys on
+    # older Node fail loudly instead of silently breaking image optimization.
     envVars:
+      - key: NODE_VERSION
+        value: ">=20.9.0"
       - key: AI_ANALYSIS_PROVIDER
         value: rules
       - key: DATABASE_URL
