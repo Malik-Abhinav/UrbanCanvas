@@ -4,7 +4,7 @@ import { UndirectedGraph } from "graphology";
 import { dijkstra } from "graphology-shortest-path";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
-import { Circle, Layer, Line, Rect, Stage } from "react-konva";
+import { Circle, Group, Layer, Line, Rect, Stage } from "react-konva";
 import type Konva from "konva";
 import {
   Bike,
@@ -42,6 +42,12 @@ import {
 import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
 import type { DrawingObjectV1 } from "../shared/drawing-document";
 import { StyledDrawingObject, type RenderedProposalObject } from "./drawing-renderer";
+import { computeContextRoadStyle, scaleContextAtZoom } from "./drawing-style";
+import {
+  resolveContextOpacity,
+  resolveProposalOpacity,
+  type LayerSettings
+} from "./layer-semantics";
 import {
   getClosestPointOnSegment,
   getDistance,
@@ -54,6 +60,7 @@ type SatelliteOverlayProps = {
   getMapZoom: () => number;
   height: number;
   initialObjects: DrawingObjectV1[];
+  layerSettings: LayerSettings;
   mapRevision: number;
   objectsRevision: number;
   onObjectsChange: (objects: DrawingObjectV1[]) => void;
@@ -228,6 +235,7 @@ export default function SatelliteOverlay({
   getMapZoom,
   height,
   initialObjects,
+  layerSettings,
   mapRevision,
   objectsRevision,
   onObjectsChange,
@@ -283,6 +291,20 @@ export default function SatelliteOverlay({
         points: road.geometry.map((point) => onMapPointToScreen(point))
       }));
   }, [mapRevision, onMapPointToScreen, osmRoads]);
+  // Editing is active whenever a drawing tool is selected or a draft object
+  // is in flight; existing context dims while this holds.
+  const isEditing = activeTool !== "select" || draftStart !== null;
+  const effectiveContextOpacity = resolveContextOpacity(layerSettings, isEditing);
+  const effectiveProposalOpacity = resolveProposalOpacity(layerSettings);
+  const contextRoadStyles = useMemo(() => {
+    void mapRevision;
+
+    const latitude = osmRoads[0]?.geometry[0]?.lat ?? 0;
+    const context = scaleContextAtZoom(latitude, getMapZoom());
+
+    return new Map(projectedRoads.map((road) => [road.id, computeContextRoadStyle(road.kind, context)]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapRevision, projectedRoads]);
   const roundaboutSnaps = useMemo(() => {
     void mapRevision;
 
@@ -830,24 +852,50 @@ export default function SatelliteOverlay({
             x={0}
             y={0}
           />
-          {Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
+          {layerSettings.visible.grid
+            ? Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
             <Line
               key={`vertical-${index}`}
               points={[index * gridSize, 0, index * gridSize, height]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
-          ))}
-          {Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
+          ))
+            : null}
+          {layerSettings.visible.grid
+            ? Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
             <Line
               key={`horizontal-${index}`}
               points={[0, index * gridSize, width, index * gridSize]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
-          ))}
+          ))
+            : null}
 
-          {renderedDeadEndEdges.map((edge) => (
+          {layerSettings.visible.osmRoads
+            ? projectedRoads.map((road) => {
+              const style = contextRoadStyles.get(road.id);
+
+              if (!style) {
+                return null;
+              }
+
+              return (
+                <Line
+                  key={`context-road-${road.id}`}
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={effectiveContextOpacity}
+                  points={road.points.flatMap((point) => [point.x, point.y])}
+                  stroke={style.color}
+                  strokeWidth={style.widthPx}
+                />
+              );
+            })
+            : null}
+
+          {layerSettings.visible.analysis && renderedDeadEndEdges.map((edge) => (
             <Line
               key={edge.id}
               lineCap="round"
@@ -859,7 +907,7 @@ export default function SatelliteOverlay({
             />
           ))}
 
-          {renderedAnalysisPath ? (
+          {layerSettings.visible.analysis && renderedAnalysisPath ? (
             <Line
               dash={[18, 8]}
               lineCap="round"
@@ -872,7 +920,7 @@ export default function SatelliteOverlay({
             />
           ) : null}
 
-          {renderedPathStart ? (
+          {layerSettings.visible.analysis && renderedPathStart ? (
             <Circle
               fill="#60a5fa"
               radius={8}
@@ -883,24 +931,26 @@ export default function SatelliteOverlay({
             />
           ) : null}
 
-          {renderedObjects.map((object) => (
-            <StyledDrawingObject
-              isSelected={object.id === selectedId}
-              key={object.id}
-              object={object}
-              onClick={(event) => handleObjectClick(event, object.id)}
-            />
-          ))}
+          <Group opacity={layerSettings.visible.proposal ? effectiveProposalOpacity : 0}>
+            {renderedObjects.map((object) => (
+              <StyledDrawingObject
+                isSelected={object.id === selectedId}
+                key={object.id}
+                object={object}
+                onClick={(event) => handleObjectClick(event, object.id)}
+              />
+            ))}
 
-          {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
+            {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
 
-          {draftStart && draftEnd ? (
-            <StyledDrawingObject
-              isDraft
-              isSelected={false}
-              object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
-            />
-          ) : null}
+            {draftStart && draftEnd ? (
+              <StyledDrawingObject
+                isDraft
+                isSelected={false}
+                object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
+              />
+            ) : null}
+          </Group>
         </Layer>
       </Stage>
     </div>
