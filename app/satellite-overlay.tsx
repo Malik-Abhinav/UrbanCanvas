@@ -74,6 +74,18 @@ import {
   type ResolvedSnap,
   type SnapTarget
 } from "./drawing-snap";
+import {
+  coerceNumericEntry,
+  constrainSegmentDelta,
+  duplicateLineObjectLatLng,
+  resolveCommand,
+  resolveGridSpacing,
+  scalePolylineLength,
+  type CommandId,
+  type PaletteCommand
+} from "./drawing-precision";
+import { metresPerPixelAt } from "./drawing-document-bridge";
+import CommandPalette from "./components/workspace/command-palette";
 
 type SatelliteOverlayProps = {
   getMapZoom: () => number;
@@ -126,6 +138,56 @@ type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" 
 
 /** How close (metres) two line endpoints must be for join-segments to link them. */
 const JOIN_TOLERANCE_METRES = 2;
+
+/** Minimum on-screen grid cell size before the scale-aware grid hides itself. */
+const MIN_GRID_SPACING_PX = 24;
+const TOOL_STORAGE_KEY = "urbancanvas.activeTool";
+
+function isLineTool(tool: Tool): tool is "road" | "bike" | "sidewalk" {
+  return tool === "road" || tool === "bike" || tool === "sidewalk";
+}
+
+function loadStoredTool(): Tool | null {
+  try {
+    const raw = window.localStorage.getItem(TOOL_STORAGE_KEY);
+
+    return raw === "select" || raw === "road" || raw === "bike" || raw === "sidewalk" || raw === "crossing" ||
+      raw === "roundabout" || raw === "signal" || raw === "erase"
+      ? (raw as Tool)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Width property key differs per line object family in the shared V1 model. */
+function widthKeyForType(type: DrawingObjectV1["type"]): string | null {
+  if (type === "road") {
+    return "laneWidthMetres";
+  }
+
+  if (type === "cycleway") {
+    return "widthMetres";
+  }
+
+  if (type === "footpath") {
+    return "clearWidthMetres";
+  }
+
+  return null;
+}
+
+function readLineWidthMetres(object: DrawingObjectV1): number {
+  const properties = object.properties as unknown as Record<string, unknown>;
+
+  for (const key of ["laneWidthMetres", "clearWidthMetres", "widthMetres"]) {
+    if (typeof properties[key] === "number") {
+      return properties[key] as number;
+    }
+  }
+
+  return 3;
+}
 
 type AnalysisMode = "idle" | "picking-path";
 
@@ -246,17 +308,18 @@ const gridSize = 32;
 
 const tools: Array<{
   Icon: typeof MousePointer2;
+  hint: string;
   id: Tool;
   label: string;
 }> = [
-  { id: "select", label: "Select", Icon: MousePointer2 },
-  { id: "road", label: "Road / Lane", Icon: SquareDashedMousePointer },
-  { id: "bike", label: "Bike Lane", Icon: Bike },
-  { id: "sidewalk", label: "Sidewalk", Icon: Waypoints },
-  { id: "crossing", label: "Pedestrian Crossing", Icon: Slash },
-  { id: "roundabout", label: "Roundabout", Icon: CircleDot },
-  { id: "signal", label: "Traffic Signal", Icon: Signal },
-  { id: "erase", label: "Erase", Icon: Eraser }
+  { id: "select", label: "Select", Icon: MousePointer2, hint: "V" },
+  { id: "road", label: "Road / Lane", Icon: SquareDashedMousePointer, hint: "R" },
+  { id: "bike", label: "Bike Lane", Icon: Bike, hint: "B" },
+  { id: "sidewalk", label: "Sidewalk", Icon: Waypoints, hint: "S" },
+  { id: "crossing", label: "Pedestrian Crossing", Icon: Slash, hint: "C" },
+  { id: "roundabout", label: "Roundabout", Icon: CircleDot, hint: "O" },
+  { id: "signal", label: "Traffic Signal", Icon: Signal, hint: "T" },
+  { id: "erase", label: "Erase", Icon: Eraser, hint: "E" }
 ];
 
 export default function SatelliteOverlay({
@@ -279,13 +342,19 @@ export default function SatelliteOverlay({
   const stageRef = useRef<Konva.Stage | null>(null);
   const initialObjectsRef = useRef(initialObjects);
   const panLastPointRef = useRef<Point | null>(null);
-  const [activeTool, setActiveTool] = useState<Tool>("select");
+  const [activeTool, setActiveTool] = useState<Tool>(() => loadStoredTool() ?? "select");
   const [hoveredTool, setHoveredTool] = useState<Tool | null>(null);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [isGridVisible, setIsGridVisible] = useState(true);
   const [history, dispatchHistory] = useReducer(historyReducer, emptyHistoryState);
   const objects = history.present;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [draftEnd, setDraftEnd] = useState<Point | null>(null);
+  // Click-to-place multi-segment chains (in addition to drag drawing): each
+  // click appends a vertex; Enter / double-click commits the whole polyline.
+  const [chainPoints, setChainPoints] = useState<Point[] | null>(null);
+  const shiftHeldRef = useRef(false);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("idle");
   const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
   const [pathStartNodeId, setPathStartNodeId] = useState<string | null>(null);
@@ -314,12 +383,15 @@ export default function SatelliteOverlay({
     onSelectionChange?.(selectedObject);
   }, [onSelectionChange, selectedObject]);
 
-  const grid = useMemo(() => {
-    const verticalLines = Math.ceil(width / gridSize);
-    const horizontalLines = Math.ceil(height / gridSize);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TOOL_STORAGE_KEY, activeTool);
+    } catch {
+      // Storage can be unavailable (private mode); tool persistence is best-effort.
+    }
+  }, [activeTool]);
 
-    return { horizontalLines, verticalLines };
-  }, [height, width]);
+  const effectiveGridVisible = layerSettings.visible.grid && isGridVisible;
   // The zoom is read lazily at render time through a ref so the converter's
   // identity stays stable; map revision bumps re-run the dependent memos.
   const getMapZoomRef = useRef(getMapZoom);
@@ -328,6 +400,25 @@ export default function SatelliteOverlay({
     []
   );
   const migrationPixelsToMetres = useMemo(() => createMigrationPixelsToMetres(converter), [converter]);
+  // Scale-aware grid: spacing derives from real metres via metresPerPixelAt
+  // and hides itself when no nice spacing stays readable on screen.
+  const gridSpec = useMemo(() => {
+    void mapRevision;
+
+    const latitude = osmRoads[0]?.geometry[0]?.lat ?? 0;
+
+    return resolveGridSpacing({
+      metresPerPixel: metresPerPixelAt(latitude, getMapZoomRef.current()),
+      minSpacingPx: MIN_GRID_SPACING_PX
+    });
+  }, [mapRevision, osmRoads]);
+  const grid = useMemo(() => {
+    const spacing = gridSpec?.spacingPx ?? gridSize;
+    const verticalLines = Math.ceil(width / spacing);
+    const horizontalLines = Math.ceil(height / spacing);
+
+    return { horizontalLines, spacing, verticalLines };
+  }, [gridSpec, height, width]);
   const renderedObjects = useMemo(() => {
     void mapRevision;
 
@@ -470,7 +561,41 @@ export default function SatelliteOverlay({
     return pointer;
   }
 
+  function clearDrafting() {
+    setDraftStart(null);
+    setDraftEnd(null);
+    setChainPoints(null);
+  }
+
+  /**
+   * Applies the Shift angle constraint at the input boundary: the raw end is
+   * unprojected to map coordinates, constrained in a local-metre frame
+   * relative to the anchor, then projected back to screen space.
+   */
+  function applyAngleConstraint(anchor: Point, rawEnd: Point): Point {
+    if (!shiftHeldRef.current) {
+      return rawEnd;
+    }
+
+    const METRES_PER_DEGREE = 111320;
+    const anchorMap = onScreenPointToMap(anchor);
+    const endMap = onScreenPointToMap(rawEnd);
+    const referenceLat = (anchorMap.lat * Math.PI) / 180;
+    const deltaLocal = {
+      x: (endMap.lng - anchorMap.lng) * METRES_PER_DEGREE * Math.cos(referenceLat),
+      y: (endMap.lat - anchorMap.lat) * METRES_PER_DEGREE
+    };
+    const constrained = constrainSegmentDelta({ x: 0, y: 0 }, deltaLocal, true);
+
+    return onMapPointToScreen({
+      lat: anchorMap.lat + constrained.y / METRES_PER_DEGREE,
+      lng: anchorMap.lng + constrained.x / (METRES_PER_DEGREE * Math.cos(referenceLat))
+    });
+  }
+
   function handleStagePointerDown(event: Konva.KonvaEventObject<PointerEvent>) {
+    shiftHeldRef.current = event.evt.shiftKey;
+
     if (event.target !== event.target.getStage() && event.target.name() !== "drawing-surface") {
       return;
     }
@@ -504,11 +629,17 @@ export default function SatelliteOverlay({
       return;
     }
 
+    if (!chainPoints) {
+      setChainPoints([point]);
+    }
+
     setDraftStart(point);
     setDraftEnd(point);
   }
 
-  function handleStagePointerMove() {
+  function handleStagePointerMove(event: Konva.KonvaEventObject<PointerEvent>) {
+    shiftHeldRef.current = event.evt.shiftKey;
+
     if (activeTool === "select" && panLastPointRef.current) {
       const point = getPointerPoint();
       if (!point) {
@@ -532,7 +663,27 @@ export default function SatelliteOverlay({
       return;
     }
 
-    setDraftEnd(point);
+    // Anchor for the Shift constraint: the last placed chain vertex while a
+    // click-chain is active, otherwise the drag origin.
+    const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
+
+    setDraftEnd(applyAngleConstraint(anchor, point));
+  }
+
+  /** Commits every vertex of the active click-chain as one multi-segment object. */
+  function commitChain() {
+    if (!chainPoints || chainPoints.length < 2 || !isLineTool(activeTool)) {
+      clearDrafting();
+      return;
+    }
+
+    pushObject({
+      id: createId(activeTool),
+      path: chainPoints.map((point) => onScreenPointToMap(point)),
+      snapped: false,
+      type: activeTool
+    });
+    clearDrafting();
   }
 
   function handleStagePointerUp() {
@@ -543,27 +694,44 @@ export default function SatelliteOverlay({
     }
 
     const distance = getDistance(draftStart, draftEnd);
+
     if (distance < 6) {
-      setDraftStart(null);
-      setDraftEnd(null);
+      // A click while a line tool is active places a chain vertex instead of
+      // cancelling; the polyline commits on Enter / double-click / tool switch.
+      if (isLineTool(activeTool)) {
+        const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
+
+        setChainPoints((current) => [...(current ?? [anchor])]);
+        setDraftStart(anchor);
+        setDraftEnd(anchor);
+      } else {
+        clearDrafting();
+      }
+
       return;
     }
 
-    if (activeTool === "road" || activeTool === "bike" || activeTool === "sidewalk") {
+    const constrainedEnd = draftEnd;
+
+    if (isLineTool(activeTool)) {
       const snappedLine = snapPreview?.type === "line" ? snapPreview : null;
+      const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
 
       pushObject({
         id: createId(activeTool),
-        path: snappedLine?.path ?? [onScreenPointToMap(draftStart), onScreenPointToMap(draftEnd)],
+        path:
+          snappedLine?.path ?? [onScreenPointToMap(anchor), onScreenPointToMap(constrainedEnd)],
         snapped: Boolean(snappedLine),
         type: activeTool
       });
+      clearDrafting();
+      return;
     }
 
     if (activeTool === "crossing") {
       const crossing = snapPreview?.type === "crossing" ? snapPreview : null;
       const start = crossing?.start ?? draftStart;
-      const end = crossing?.end ?? draftEnd;
+      const end = crossing?.end ?? constrainedEnd;
 
       pushObject({
         anchor: onScreenPointToMap(start),
@@ -584,8 +752,7 @@ export default function SatelliteOverlay({
       });
     }
 
-    setDraftStart(null);
-    setDraftEnd(null);
+    clearDrafting();
   }
 
   function pushObject(object: DrawingObject) {
@@ -807,25 +974,133 @@ export default function SatelliteOverlay({
     dispatchHistory({ id: partner.id, type: "remove" });
   }
 
+  /** Duplicates the selected line as a parallel copy offset by its width. */
+  function handleOffsetSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const copy = duplicateLineObjectLatLng(
+      object,
+      `${object.id}-offset-${Date.now().toString(36)}`,
+      readLineWidthMetres(object) * 2 + 2
+    );
+
+    if (!copy) {
+      return;
+    }
+
+    dispatchHistory({ object: copy, type: "add" });
+    setSelectedId(copy.id);
+  }
+
+  /** Duplicates the selected line in place (⌘D). */
+  function handleDuplicateSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const copy = duplicateLineObjectLatLng(
+      object,
+      `${object.id}-copy-${Date.now().toString(36)}`,
+      0
+    );
+
+    if (!copy) {
+      return;
+    }
+
+    dispatchHistory({ object: copy, type: "add" });
+    setSelectedId(copy.id);
+  }
+
+  /** Numeric length entry: rescales the selected line about its first vertex. */
+  function commitNumericLength(raw: string) {
+    const object = selectedObject;
+    const metres = coerceNumericEntry(raw, { max: 9999, min: 1 });
+
+    if (!object || object.geometry.type !== "LineString" || metres === null) {
+      return;
+    }
+
+    const points = scalePolylineLength(object.geometry.points, metres);
+
+    if (points) {
+      commitGeometry(object.id, { points, type: "LineString" });
+    }
+  }
+
+  function handleCommand(id: string) {
+    if (id.startsWith("tool.")) {
+      setActiveTool(id.slice(5) as Tool);
+      clearDrafting();
+      panLastPointRef.current = null;
+      return;
+    }
+
+    switch (id as CommandId | "view.toggle-grid") {
+      case "edit.redo":
+        redo();
+        break;
+      case "edit.undo":
+        undo();
+        break;
+      case "geometry.commit":
+        commitChain();
+        break;
+      case "object.duplicate":
+        handleDuplicateSelected();
+        break;
+      case "object.offset":
+        handleOffsetSelected();
+        break;
+      case "palette.open":
+        setIsPaletteOpen((open) => !open);
+        break;
+      case "view.toggle-grid":
+        setIsGridVisible((visible) => !visible);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const paletteCommands: PaletteCommand[] = useMemo(
+    () => [
+      ...tools.map((tool) => ({ hint: tool.hint, id: `tool.${tool.id}`, title: `Draw with ${tool.label}` })),
+      { hint: "G", id: "view.toggle-grid", title: effectiveGridVisible ? "Hide grid" : "Show grid" },
+      { hint: "⇧O", id: "object.offset", title: "Duplicate offset parallel copy" },
+      { hint: "⌘D", id: "object.duplicate", title: "Duplicate selection" },
+      { hint: "Enter", id: "geometry.commit", title: "Commit multi-segment path" },
+      { hint: "⌘Z", id: "edit.undo", title: "Undo" },
+      { hint: "⌘⇧Z", id: "edit.redo", title: "Redo" }
+    ],
+    [effectiveGridVisible]
+  );
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+    // The palette input handles its own keys; never intercept while it's open
+    // except for its close key, which the palette itself consumes.
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      panLastPointRef.current = null;
-      redo();
+      setIsPaletteOpen((open) => !open);
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      panLastPointRef.current = null;
-      redo();
+    if (isPaletteOpen) {
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+    const command = resolveCommand(event);
+
+    if (command) {
       event.preventDefault();
       panLastPointRef.current = null;
-      undo();
+      handleCommand(command);
       return;
     }
 
@@ -833,6 +1108,13 @@ export default function SatelliteOverlay({
       event.preventDefault();
       panLastPointRef.current = null;
       removeObject(selectedId);
+      return;
+    }
+
+    if (event.key === "Enter" && chainPoints) {
+      event.preventDefault();
+      panLastPointRef.current = null;
+      commitChain();
       return;
     }
 
@@ -846,8 +1128,7 @@ export default function SatelliteOverlay({
     if (event.key === "Escape") {
       setActiveTool("select");
       setAnalysisMode("idle");
-      setDraftStart(null);
-      setDraftEnd(null);
+      clearDrafting();
       panLastPointRef.current = null;
 
       if (isEditingGeometry) {
@@ -930,6 +1211,7 @@ export default function SatelliteOverlay({
               setActiveTool(id);
               setDraftStart(null);
               setDraftEnd(null);
+              setChainPoints(null);
               panLastPointRef.current = null;
             }}
             title={label}
@@ -1008,8 +1290,79 @@ export default function SatelliteOverlay({
       {selectedObject ? (
         <div className="absolute bottom-3 left-3 z-10 w-56">
           <ObjectInspector object={selectedObject} onPropertyChange={updateSelectedProperty} />
+          {selectedObject.geometry.type === "LineString" ? (
+            <div
+              aria-label="Numeric geometry entry"
+              className="mt-2 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur"
+            >
+              <p className="text-[10px] font-semibold uppercase text-white/45">Numeric entry</p>
+              <div className="mt-1.5 flex gap-2">
+                <label className="flex-1 text-[10px] uppercase text-white/50">
+                  Length m
+                  <input
+                    className="mt-0.5 w-full rounded border border-white/15 bg-white/10 px-1.5 py-1 text-xs text-white focus:border-[#f5c542] focus:outline-none"
+                    data-testid="numeric-length"
+                    defaultValue={String(Math.round(getPolylineLengthMetres(selectedObject.geometry.points)))}
+                    key={`length-${selectedObject.id}-${selectedObject.geometry.points.length}`}
+                    onBlur={(event) => commitNumericLength(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        commitNumericLength(event.currentTarget.value);
+                        event.currentTarget.blur();
+                      }
+                    }}
+                    placeholder="e.g. 120"
+                    type="text"
+                  />
+                </label>
+                {widthKeyForType(selectedObject.type) ? (
+                  <label className="flex-1 text-[10px] uppercase text-white/50">
+                    Width m
+                    <input
+                      className="mt-0.5 w-full rounded border border-white/15 bg-white/10 px-1.5 py-1 text-xs text-white focus:border-[#f5c542] focus:outline-none"
+                      data-testid="numeric-width"
+                      defaultValue={String(readLineWidthMetres(selectedObject))}
+                      key={`width-${selectedObject.id}`}
+                      onBlur={(event) => {
+                        const value = coerceNumericEntry(event.target.value, { max: 20, min: 0 });
+
+                        if (value !== null && widthKeyForType(selectedObject.type)) {
+                          updateSelectedProperty(widthKeyForType(selectedObject.type) as string, String(value));
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const input = event.currentTarget;
+                          const value = coerceNumericEntry(input.value, { max: 20, min: 0 });
+
+                          if (value !== null && widthKeyForType(selectedObject.type)) {
+                            updateSelectedProperty(widthKeyForType(selectedObject.type) as string, String(value));
+                          }
+
+                          input.blur();
+                        }
+                      }}
+                      placeholder="e.g. 3.5"
+                      type="text"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
+
+      <CommandPalette
+        commands={paletteCommands}
+        onClose={() => setIsPaletteOpen(false)}
+        onRun={handleCommand}
+        open={isPaletteOpen}
+      />
 
       <div className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur">
         <button
@@ -1108,6 +1461,11 @@ export default function SatelliteOverlay({
 
       <Stage
         height={height}
+        onDblClick={() => {
+          if (chainPoints) {
+            commitChain();
+          }
+        }}
         onClick={(event) => {
           if (
             (event.target === event.target.getStage() || event.target.name() === "drawing-surface") &&
@@ -1136,21 +1494,21 @@ export default function SatelliteOverlay({
             x={0}
             y={0}
           />
-          {layerSettings.visible.grid
+          {effectiveGridVisible && gridSpec
             ? Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
             <Line
               key={`vertical-${index}`}
-              points={[index * gridSize, 0, index * gridSize, height]}
+              points={[index * grid.spacing, 0, index * grid.spacing, height]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
           ))
             : null}
-          {layerSettings.visible.grid
+          {effectiveGridVisible && gridSpec
             ? Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
             <Line
               key={`horizontal-${index}`}
-              points={[0, index * gridSize, width, index * gridSize]}
+              points={[0, index * grid.spacing, width, index * grid.spacing]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
@@ -1244,6 +1602,15 @@ export default function SatelliteOverlay({
                 isDraft
                 isSelected={false}
                 object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
+              />
+            ) : null}
+
+            {chainPoints && draftEnd ? (
+              <Line
+                dash={[8, 6]}
+                points={chainPoints.flatMap((point) => [point.x, point.y]).concat(draftEnd.x, draftEnd.y)}
+                stroke="#f5c542"
+                strokeWidth={2}
               />
             ) : null}
           </Group>
@@ -1978,6 +2345,17 @@ function getVector(start: Point, end: Point): Point {
     x: end.x - start.x,
     y: end.y - start.y
   };
+}
+
+/** Approximate real-world length of a map polyline, in metres. */
+function getPolylineLengthMetres(points: MapPoint[]): number {
+  let total = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    total += getMapDistanceMeters(points[index - 1], points[index]);
+  }
+
+  return total;
 }
 
 function createId(type: DrawingObject["type"]) {
