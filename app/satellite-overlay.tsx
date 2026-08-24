@@ -4,7 +4,7 @@ import { UndirectedGraph } from "graphology";
 import { dijkstra } from "graphology-shortest-path";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
-import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
+import { Circle, Layer, Line, Rect, Stage } from "react-konva";
 import type Konva from "konva";
 import {
   Bike,
@@ -41,6 +41,7 @@ import {
 } from "./drawing-document-bridge";
 import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
 import type { DrawingObjectV1 } from "../shared/drawing-document";
+import { StyledDrawingObject, type RenderedProposalObject } from "./drawing-renderer";
 import {
   getClosestPointOnSegment,
   getDistance,
@@ -125,32 +126,7 @@ export type DrawingObject =
       type: "signal";
     };
 
-type RenderedDrawingObject =
-  | {
-      id: string;
-      points: number[];
-      snapped?: boolean;
-      strokeWidth?: number;
-      type: "road" | "bike" | "sidewalk";
-    }
-  | {
-      end: Point;
-      id: string;
-      start: Point;
-      strokeWidth?: number;
-      type: "crossing";
-    }
-  | {
-      center: Point;
-      id: string;
-      radius: number;
-      type: "roundabout";
-    }
-  | {
-      id: string;
-      point: Point;
-      type: "signal";
-    };
+type RenderedDrawingObject = RenderedProposalObject;
 
 type ProjectedRoad = OsmRoad & {
   points: Point[];
@@ -232,9 +208,6 @@ type SnapPreview =
 
 const gridSize = 32;
 const snapDistance = 34;
-const defaultRoadWidth = 22;
-const bikeLaneWidth = 10;
-const sidewalkWidth = 6;
 
 const tools: Array<{
   Icon: typeof MousePointer2;
@@ -911,7 +884,7 @@ export default function SatelliteOverlay({
           ) : null}
 
           {renderedObjects.map((object) => (
-            <DrawingObjectShape
+            <StyledDrawingObject
               isSelected={object.id === selectedId}
               key={object.id}
               object={object}
@@ -922,7 +895,7 @@ export default function SatelliteOverlay({
           {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
 
           {draftStart && draftEnd ? (
-            <DrawingObjectShape
+            <StyledDrawingObject
               isDraft
               isSelected={false}
               object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
@@ -971,173 +944,6 @@ function SnapIndicator({ preview }: { preview: SnapPreview }) {
   );
 }
 
-function DrawingObjectShape({
-  isDraft = false,
-  isSelected,
-  object,
-  onClick
-}: {
-  isDraft?: boolean;
-  isSelected: boolean;
-  object: RenderedDrawingObject;
-  onClick?: (event: Konva.KonvaEventObject<MouseEvent>) => void;
-}) {
-  const opacity = isDraft ? 0.72 : 1;
-  const selectionStroke = isSelected ? "#f5c542" : "transparent";
-
-  if (object.type === "road") {
-    const roadWidth = object.strokeWidth ?? defaultRoadWidth;
-
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#222729"
-          strokeWidth={roadWidth}
-        />
-        <Line
-          dash={[12, 10]}
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#d8d2c4"
-          strokeWidth={2}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={roadWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "bike") {
-    const bikeWidth = object.strokeWidth ?? bikeLaneWidth;
-
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#22c55e"
-          strokeWidth={bikeWidth}
-        />
-        <Line
-          dash={[6, 7]}
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#ddffe9"
-          strokeWidth={1.5}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={bikeWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "sidewalk") {
-    const pathWidth = object.strokeWidth ?? sidewalkWidth;
-
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#e5e7eb"
-          strokeWidth={pathWidth}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={pathWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "crossing") {
-    const { angle, length, midpoint } = getSegmentMetrics(object.start, object.end);
-    // Committed crossings carry a real-metre-derived width; drafts fall back
-    // to the previous fixed thickness.
-    const bodyHeight = Math.max(16, object.strokeWidth ?? 28);
-    const stripeHeight = bodyHeight - 4;
-    const stripeCount = Math.max(3, Math.min(8, Math.round(length / 14)));
-    const stripeOffsets = Array.from(
-      { length: stripeCount },
-      (_, index) => -length / 2 + (length * (index + 0.5)) / stripeCount
-    );
-
-    return (
-      <Group onClick={onClick} opacity={opacity} rotation={angle} x={midpoint.x} y={midpoint.y}>
-        <Rect fill="#1f2425" height={bodyHeight} offsetX={length / 2} offsetY={bodyHeight / 2} width={length} />
-        {stripeOffsets.map((x) => (
-          <Rect fill="#f8fafc" height={stripeHeight} key={x} offsetY={stripeHeight / 2} width={4} x={x} y={0} />
-        ))}
-        <Rect
-          height={bodyHeight + 6}
-          offsetX={length / 2}
-          offsetY={(bodyHeight + 6) / 2}
-          stroke={selectionStroke}
-          strokeWidth={isSelected ? 2 : 0}
-          width={length}
-        />
-      </Group>
-    );
-  }
-
-  if (object.type === "roundabout") {
-    return (
-      <Group onClick={onClick} opacity={opacity}>
-        <Circle
-          fill="rgba(31, 36, 37, 0.78)"
-          radius={object.radius}
-          stroke="#d8d2c4"
-          strokeWidth={4}
-          x={object.center.x}
-          y={object.center.y}
-        />
-        <Circle
-          fill="rgba(16, 19, 17, 0.75)"
-          radius={Math.max(8, object.radius * 0.42)}
-          stroke="#f5c542"
-          strokeWidth={isSelected ? 3 : 1.5}
-          x={object.center.x}
-          y={object.center.y}
-        />
-        {[0, 90, 180, 270].map((rotation) => (
-          <Line
-            key={rotation}
-            points={[object.center.x, object.center.y - object.radius, object.center.x, object.center.y - object.radius - 20]}
-            rotation={rotation}
-            stroke="#1f2425"
-            strokeWidth={10}
-          />
-        ))}
-      </Group>
-    );
-  }
-
-  if (object.type === "signal") {
-    return (
-      <Group onClick={onClick} opacity={opacity} x={object.point.x} y={object.point.y}>
-        <Circle fill="#60a5fa" radius={13} stroke={isSelected ? "#f5c542" : "#dbeafe"} strokeWidth={2} />
-        <Text align="center" fill="#101311" fontSize={14} fontStyle="bold" text="T" width={26} x={-13} y={-8} />
-      </Group>
-    );
-  }
-
-  return null;
-}
-
-function SelectionLine({ points, width }: { points: number[]; width: number }) {
-  return (
-    <Line
-      lineCap="round"
-      lineJoin="round"
-      points={points}
-      stroke="#f5c542"
-      strokeWidth={width}
-      opacity={0.34}
-    />
-  );
-}
 
 function getSnapPreview(
   tool: Tool,
@@ -1565,6 +1371,11 @@ function getRenderedObject(
     return {
       center,
       id: object.id,
+      metResPerPixel: converter.metresPerPixel(object.geometry.point),
+      properties: {
+        inscribedCircleDiameterMetres: object.properties.inscribedCircleDiameterMetres,
+        lanes: object.properties.lanes
+      },
       radius: Math.max(
         MIN_ROUNDABOUT_RADIUS_PX,
         converter.metresToPixels(object.properties.inscribedCircleDiameterMetres / 2, object.geometry.point)
@@ -1576,7 +1387,9 @@ function getRenderedObject(
   if (object.type === "traffic-signal") {
     return {
       id: object.id,
+      metResPerPixel: converter.metresPerPixel(object.geometry.point),
       point: projectMapPoint(object.geometry.point),
+      properties: { kind: object.properties.kind },
       type: "signal"
     };
   }
@@ -1596,6 +1409,8 @@ function getRenderedObject(
         y: start.y + direction.y * lengthPx
       },
       id: object.id,
+      metResPerPixel: converter.metresPerPixel(anchor),
+      properties: { control: object.properties.control },
       start,
       strokeWidth: Math.max(MIN_CROSSING_WIDTH_PX, converter.metresToPixels(widthMetres, anchor)),
       type: "crossing"
@@ -1609,17 +1424,44 @@ function getRenderedObject(
     converter.metresToPixels(getLineObjectWidthMetres(object), midAnchor)
   );
 
+  if (object.type === "road") {
+    return {
+      id: object.id,
+      metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+      points: getProjectedPoints(points, projectMapPoint),
+      properties: { ...object.properties },
+      strokeWidth: widthPx,
+      type: "road"
+    };
+  }
+
+  if (object.type === "cycleway") {
+    return {
+      id: object.id,
+      metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+      points: getProjectedPoints(points, projectMapPoint),
+      properties: { ...object.properties },
+      strokeWidth: widthPx,
+      type: "bike"
+    };
+  }
+
   return {
     id: object.id,
-    points: points.flatMap((point) => {
-      const projected = projectMapPoint(point);
-
-      return [projected.x, projected.y];
-    }),
+    metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+    points: getProjectedPoints(points, projectMapPoint),
+    properties: { ...object.properties },
     strokeWidth: widthPx,
-    // V1 cycleways/footpaths render with the established bike/sidewalk styles.
-    type: object.type === "cycleway" ? "bike" : object.type === "footpath" ? "sidewalk" : "road"
+    type: "sidewalk"
   };
+}
+
+function getProjectedPoints(points: MapPoint[], projectMapPoint: (point: MapPoint) => Point): number[] {
+  return points.flatMap((point) => {
+    const projected = projectMapPoint(point);
+
+    return [projected.x, projected.y];
+  });
 }
 
 function getDraftObject(tool: Tool, start: Point, end: Point): RenderedDrawingObject {
@@ -1664,20 +1506,6 @@ function getDraftObject(tool: Tool, start: Point, end: Point): RenderedDrawingOb
     points: [start.x, start.y, end.x, end.y],
     snapped: false,
     type: "road"
-  };
-}
-
-function getSegmentMetrics(start: Point, end: Point) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-
-  return {
-    angle: (Math.atan2(dy, dx) * 180) / Math.PI,
-    length: Math.max(26, Math.sqrt(dx * dx + dy * dy)),
-    midpoint: {
-      x: (start.x + end.x) / 2,
-      y: (start.y + end.y) / 2
-    }
   };
 }
 
