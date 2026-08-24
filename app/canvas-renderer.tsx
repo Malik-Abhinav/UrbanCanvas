@@ -2,8 +2,10 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { WheelEvent } from "react";
-import { Layer, Line, Rect, Stage } from "react-konva";
+import { Layer, Line, Rect, Stage, Group } from "react-konva";
 import type Konva from "konva";
+
+import { computeContextRoadStyle, scaleContextAtZoom } from "./drawing-style";
 
 export type BoundingBox = {
   north: number;
@@ -53,6 +55,20 @@ export default function CanvasRenderer({ data, onBackToMap }: CanvasRendererProp
   const [position, setPosition] = useState({ x: 0, y: 0 });
 
   const projected = useMemo(() => projectOsmData(data), [data]);
+  // Scale context derived from the fit-to-bbox projection so road widths stay
+  // in real-world proportion regardless of the mapped extent.
+  const contextRoadScale = useMemo(() => {
+    const { bbox } = data;
+    const midLat = (bbox.north + bbox.south) / 2;
+    const lngSpan = Math.max(bbox.east - bbox.west, 0.000001);
+    const latSpan = Math.max(bbox.north - bbox.south, 0.000001);
+    const drawableWidth = canvasWidth - canvasPadding * 2;
+    const drawableHeight = canvasHeight - canvasPadding * 2;
+    const pxPerDegree = Math.min(drawableWidth / lngSpan, drawableHeight / latSpan);
+    const metresPerDegree = 111_320 * Math.cos((midLat * Math.PI) / 180);
+
+    return scaleContextAtZoom(0, Math.log2(metresPerDegree / Math.max(pxPerDegree, 1e-9)));
+  }, [data]);
 
   function handleWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -133,17 +149,30 @@ export default function CanvasRenderer({ data, onBackToMap }: CanvasRendererProp
               strokeWidth={0.8}
             />
           ))}
-          {projected.roads.map((feature) => (
-            <Line
-              key={`road-${feature.id}`}
-              lineCap="round"
-              lineJoin="round"
-              opacity={0.94}
-              points={feature.points}
-              stroke={getRoadColor(feature.kind)}
-              strokeWidth={getRoadWidth(feature.kind)}
-            />
-          ))}
+          {projected.roads.map((feature) => {
+            const style = computeContextRoadStyle(feature.kind, contextRoadScale);
+
+            return (
+              <Group key={`road-${feature.id}`}>
+                <Line
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={0.94}
+                  points={feature.points}
+                  stroke={style.casingColor}
+                  strokeWidth={style.casingWidthPx}
+                />
+                <Line
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={0.94}
+                  points={feature.points}
+                  stroke={getRoadColor(feature.kind)}
+                  strokeWidth={style.widthPx}
+                />
+              </Group>
+            );
+          })}
         </Layer>
       </Stage>
     </div>
@@ -200,21 +229,6 @@ function createProjector(bounds: BoundingBox) {
   });
 }
 
-function getRoadWidth(kind: string) {
-  if (["motorway", "trunk", "primary"].includes(kind)) {
-    return 8;
-  }
-
-  if (["secondary", "tertiary"].includes(kind)) {
-    return 5;
-  }
-
-  if (["residential", "unclassified", "service"].includes(kind)) {
-    return 3;
-  }
-
-  return 1.6;
-}
 
 function getRoadColor(kind: string) {
   if (["footway", "path", "pedestrian", "cycleway"].includes(kind)) {
