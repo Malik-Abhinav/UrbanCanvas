@@ -10,7 +10,6 @@ import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
 import { getRetryAfterMilliseconds } from "./retry-after";
-import SatelliteOverlay from "./satellite-overlay";
 import ProjectRail, {
   formatProjectDate,
   type BoundingBox,
@@ -18,6 +17,7 @@ import ProjectRail, {
   type ProjectSummary,
   type SearchResult
 } from "./components/workspace/project-rail";
+import MapStage, { type OverlayBox, type SelectionBox } from "./components/workspace/map-stage";
 import {
   createLayerSettings,
   type LayerSettings
@@ -60,20 +60,6 @@ type ScreenPoint = {
 type MapPoint = {
   lat: number;
   lng: number;
-};
-
-type SelectionBox = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-type OverlayBox = {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
 };
 
 type OsmResponse = {
@@ -1126,102 +1112,37 @@ export default function MapSearch() {
           </div>
         </aside>
 
-        <section
-          aria-label="Map canvas"
-          className="relative min-h-[62vh] overflow-hidden bg-[#071114] lg:min-h-screen"
-          id="map-canvas"
-        >
-          <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
-          {!isMapLoaded && !mapError ? (
-            <div className="pointer-events-none absolute left-4 top-4 z-10">
-              <div aria-live="polite" className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
-                Loading satellite map...
-              </div>
-            </div>
-          ) : null}
-          {mapError ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-[#0d100f] p-6">
-              <div className="max-w-md rounded border border-[#ff6b57]/30 bg-[#161a18] p-5 shadow-2xl">
-                <h2 role="alert" className="text-lg font-semibold text-[#ffd1ca]">Map failed to load</h2>
-                <p className="mt-3 text-sm leading-6 text-white/70">{mapError}</p>
-              </div>
-            </div>
-          ) : null}
-          <div
-            className={`absolute inset-0 ${
-              isSelectingArea && !isAreaConfirmed ? "cursor-crosshair" : "pointer-events-none"
-            }`}
-            onPointerDown={handleSelectionPointerDown}
-            onPointerMove={handleSelectionPointerMove}
-            onPointerUp={handleSelectionPointerUp}
-          >
-            {selectionBox && isDraggingSelection && !isAreaConfirmed ? (
-              <div
-                className="absolute border-2 border-[#f5c542] bg-[#f5c542]/20"
-                style={{
-                  height: selectionBox.height,
-                  left: selectionBox.left,
-                  top: selectionBox.top,
-                  width: selectionBox.width
-                }}
-              />
-            ) : null}
-          </div>
-
-          {isAreaConfirmed && overlayBox ? (
-            <div
-              aria-label="Drawing canvas overlay"
-              className="absolute overflow-hidden"
-              role="region"
-              style={{
-                height: overlayBox.height,
-                left: overlayBox.left,
-                top: overlayBox.top,
-                width: overlayBox.width
-              }}
-            >
-              <SatelliteOverlay
-                getMapZoom={() => mapRef.current?.getZoom() ?? 12}
-                height={overlayBox.height}
-                initialObjects={loadedProjectObjects}
-                layerSettings={layerSettings}
-                onBindPropertyUpdate={(update) => {
-                  propertyUpdateRef.current = update;
-                }}
-                onSelectionChange={setInspectedObject}
-                highlightObjectIds={highlightObjectIds}
-                mapRevision={mapRevision}
-                objectsRevision={projectObjectsRevision}
-                onObjectsChange={handleObjectsChange}
-                onMapPointToScreen={(point) => mapPointToScreenPoint(point)}
-                onMapPan={(delta) => panConfirmedMap(delta)}
-                onMapZoom={(direction) => zoomConfirmedMap(direction)}
-                onScreenPointToMap={(point) => screenPointToMapPoint(point)}
-                osmRoads={osmData?.roads ?? []}
-                width={overlayBox.width}
-              />
-            </div>
-          ) : null}
-
-          {isAreaConfirmed ? (
-            <div className="absolute right-4 top-4 rounded border border-white/15 bg-[#161a18]/90 px-3 py-2 text-sm text-white/75 shadow-xl">
-              Satellite base frozen. Canvas overlay ready.
-              {isFetchingOsm ? <span className="ml-2 text-[#f5c542]">Fetching OSM...</span> : null}
-            </div>
-          ) : null}
-
-          {!mapboxToken && !fixturesEnabled && !isAreaConfirmed ? (
-            <div className="absolute inset-0 flex items-center justify-center p-6">
-              <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
-                <h2 className="text-xl font-semibold">Mapbox token needed</h2>
-                <p className="mt-3 text-sm leading-6 text-white/70">
-                  Add your public Mapbox token to `.env` as `NEXT_PUBLIC_MAPBOX_TOKEN`,
-                  then restart `npm run dev`.
-                </p>
-              </div>
-            </div>
-          ) : null}
-        </section>
+        <MapStage
+          getMapZoom={() => mapRef.current?.getZoom() ?? 12}
+          highlightObjectIds={highlightObjectIds}
+          isAreaConfirmed={isAreaConfirmed}
+          isDraggingSelection={isDraggingSelection}
+          isFetchingOsm={isFetchingOsm}
+          isMapLoaded={isMapLoaded}
+          isSelectingArea={isSelectingArea}
+          layerSettings={layerSettings}
+          loadedProjectObjects={loadedProjectObjects}
+          mapContainerRef={mapContainerRef}
+          mapError={mapError}
+          mapRevision={mapRevision}
+          objectsRevision={projectObjectsRevision}
+          onBindPropertyUpdate={(update) => {
+            propertyUpdateRef.current = update;
+          }}
+          onMapPan={(delta) => panConfirmedMap(delta)}
+          onMapPointToScreen={(point) => mapPointToScreenPoint(point)}
+          onMapZoom={(direction) => zoomConfirmedMap(direction)}
+          onObjectsChange={handleObjectsChange}
+          onScreenPointToMap={(point) => screenPointToMapPoint(point)}
+          onSelectionChange={setInspectedObject}
+          onSelectionPointerDown={handleSelectionPointerDown}
+          onSelectionPointerMove={handleSelectionPointerMove}
+          onSelectionPointerUp={handleSelectionPointerUp}
+          osmRoads={osmData?.roads ?? []}
+          overlayBox={overlayBox}
+          selectionBox={selectionBox}
+          showTokenNotice={!mapboxToken && !fixturesEnabled && !isAreaConfirmed}
+        />
       </div>
     </main>
   );
