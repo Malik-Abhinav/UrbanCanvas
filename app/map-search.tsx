@@ -11,7 +11,7 @@ import { apiFetch } from "./api-fetch";
 import { normalizeSavedProject } from "./project-normalization";
 import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
-import ObjectInspector from "./components/workspace/object-inspector";
+import ContextInspector from "./components/workspace/context-inspector";
 import LayersPanel from "./components/workspace/layers-panel";
 import {
   createLayerSettings,
@@ -1111,14 +1111,11 @@ export default function MapSearch() {
               />
             </div>
           ) : null}
-          {isAreaConfirmed ? (
-            <div className="mt-4">
-              <ObjectInspector
-                object={inspectedObject}
-                onPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
-              />
-            </div>
-          ) : null}
+          <ContextInspector
+            isActive={isAreaConfirmed}
+            object={inspectedObject}
+            onPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
+          />
           <form className="mt-8" onSubmit={handleSearch}>
             <label className="text-sm font-medium text-white/75" htmlFor="location-search">
               Search location
