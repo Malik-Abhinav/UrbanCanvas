@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
 import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
@@ -33,7 +32,8 @@ import {
 import type { DrawingObjectV1 } from "../shared/drawing-document";
 import type { AnalysisFinding } from "../shared/analysis-findings";
 import { AnalysisInspector } from "./components/workspace/analysis-inspector";
-import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
+import { useWorkspaceAuth } from "./workspace-auth";
+import WorkspaceShell from "./components/workspace/workspace-shell";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -1011,107 +1011,9 @@ export default function MapSearch() {
   }
 
   return (
-    <main className="min-h-screen bg-[#0b0f12] text-[#f8fafc]">
-      <a
-        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:border focus:border-[#63e6be] focus:bg-[#101820] focus:px-3 focus:py-2 focus:text-sm"
-        href="#map-canvas"
-      >
-        Skip to map canvas
-      </a>
-      <div
-        className={`grid min-h-screen transition-[grid-template-columns] duration-300 ease-out ${
-          isSidebarCollapsed ? "lg:grid-cols-[76px_1fr]" : "lg:grid-cols-[400px_1fr]"
-        }`}
-      >
-        <aside
-          aria-label="Map workspace controls"
-          className={`z-10 border-b border-white/10 bg-[#101820]/95 shadow-2xl backdrop-blur transition-all duration-300 lg:border-b-0 lg:border-r ${
-            isSidebarCollapsed ? "px-3 py-4" : "px-5 py-5"
-          }`}
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div className={isSidebarCollapsed ? "hidden" : "block"}>
-              <p className="text-sm font-semibold text-[#63e6be]">UrbanCanvas</p>
-              <h1 className="mt-2 text-3xl font-semibold leading-tight tracking-normal">Map workspace</h1>
-            </div>
-            <div className="flex items-center gap-2">
-              <WorkspaceAuthControls collapsed={isSidebarCollapsed} />
-              <button
-                aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                className="icon-button"
-                onClick={() => setIsSidebarCollapsed((current) => !current)}
-                title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                type="button"
-              >
-                {isSidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
-              </button>
-            </div>
-          </div>
-
-          <div className={isSidebarCollapsed ? "mt-8 flex flex-col items-center gap-3" : "hidden"}>
-            <p className="vertical-brand text-[#63e6be]">UrbanCanvas</p>
-          </div>
-
-          <div className={isSidebarCollapsed ? "hidden" : "block"}>
-          <ProjectRail
-            activeFindings={activeFindings}
-            analysisMessage={analysisMessage}
-            canRetryOsm={!osmData && isAreaConfirmed && selectedBounds !== null}
-            changeAnalysis={changeAnalysis}
-            currentProjectId={currentProjectId}
-            deletingProjectId={deletingProjectId}
-            inspectedObject={inspectedObject}
-            isAnalyzingChanges={isAnalyzingChanges}
-            isAreaConfirmed={isAreaConfirmed}
-            isAnalysisStale={isAnalysisStale}
-            isFetchingOsm={isFetchingOsm}
-            isLoadingProjects={isLoadingProjects}
-            isMapLoaded={isMapLoaded}
-            isSavingProject={isSavingProject}
-            isSearching={isSearching}
-            isSelectingArea={isSelectingArea}
-            isSignedIn={isSignedIn}
-            lastAutoSaveFailed={lastAutoSaveFailed}
-            layerSettings={layerSettings}
-            onAnalyzeChanges={() => void analyzeCurrentChanges()}
-            onClearSelection={clearSelection}
-            onConfirmSelectedArea={() => void confirmSelectedArea()}
-            onDeleteProject={(id) => void deleteProject(id)}
-            onFlyToResult={flyToResult}
-            onInspectPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
-            onLoadProject={(id) => void loadProject(id)}
-            onProjectNameChange={setProjectName}
-            onQueryChange={setQuery}
-            onRefreshProjects={() => void fetchProjects()}
-            onRetryOsm={() => {
-              if (selectedBounds) {
-                void fetchSelectedAreaData(selectedBounds);
-              }
-            }}
-            onSaveProject={() => void saveCurrentProject()}
-            onSearch={handleSearch}
-            onSelectFinding={(finding) => setSelectedFindingId(finding?.id ?? null)}
-            onToggleAreaSelection={toggleAreaSelection}
-            onUpdateLayerSettings={setLayerSettings}
-            osmData={osmData}
-            osmError={osmError}
-            osmRetrySeconds={osmRetrySeconds}
-            projectDeleteError={projectDeleteError}
-            projectName={projectName}
-            projectMessage={projectMessage}
-            projects={projects}
-            query={query}
-            results={results}
-            searchError={error}
-            selectedBounds={selectedBounds}
-            selectedFindingId={selectedFindingId}
-            selectedPlace={selectedPlace}
-            selectionAreaKm2={selectionAreaKm2}
-            selectionError={selectionError}
-          />
-          </div>
-        </aside>
-
+    <WorkspaceShell
+      isSidebarCollapsed={isSidebarCollapsed}
+      mapStage={
         <MapStage
           getMapZoom={() => mapRef.current?.getZoom() ?? 12}
           highlightObjectIds={highlightObjectIds}
@@ -1143,8 +1045,65 @@ export default function MapSearch() {
           selectionBox={selectionBox}
           showTokenNotice={!mapboxToken && !fixturesEnabled && !isAreaConfirmed}
         />
-      </div>
-    </main>
+      }
+      onToggleSidebar={() => setIsSidebarCollapsed((current) => !current)}
+      rail={<ProjectRail
+        activeFindings={activeFindings}
+        analysisMessage={analysisMessage}
+        canRetryOsm={!osmData && isAreaConfirmed && selectedBounds !== null}
+        changeAnalysis={changeAnalysis}
+        currentProjectId={currentProjectId}
+        deletingProjectId={deletingProjectId}
+        inspectedObject={inspectedObject}
+        isAnalyzingChanges={isAnalyzingChanges}
+        isAreaConfirmed={isAreaConfirmed}
+        isAnalysisStale={isAnalysisStale}
+        isFetchingOsm={isFetchingOsm}
+        isLoadingProjects={isLoadingProjects}
+        isMapLoaded={isMapLoaded}
+        isSavingProject={isSavingProject}
+        isSearching={isSearching}
+        isSelectingArea={isSelectingArea}
+        isSignedIn={isSignedIn}
+        lastAutoSaveFailed={lastAutoSaveFailed}
+        layerSettings={layerSettings}
+        onAnalyzeChanges={() => void analyzeCurrentChanges()}
+        onClearSelection={clearSelection}
+        onConfirmSelectedArea={() => void confirmSelectedArea()}
+        onDeleteProject={(id) => void deleteProject(id)}
+        onFlyToResult={flyToResult}
+        onInspectPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
+        onLoadProject={(id) => void loadProject(id)}
+        onProjectNameChange={setProjectName}
+        onQueryChange={setQuery}
+        onRefreshProjects={() => void fetchProjects()}
+        onRetryOsm={() => {
+          if (selectedBounds) {
+            void fetchSelectedAreaData(selectedBounds);
+          }
+        }}
+        onSaveProject={() => void saveCurrentProject()}
+        onSearch={handleSearch}
+        onSelectFinding={(finding) => setSelectedFindingId(finding?.id ?? null)}
+        onToggleAreaSelection={toggleAreaSelection}
+        onUpdateLayerSettings={setLayerSettings}
+        osmData={osmData}
+        osmError={osmError}
+        osmRetrySeconds={osmRetrySeconds}
+        projectDeleteError={projectDeleteError}
+        projectName={projectName}
+        projectMessage={projectMessage}
+        projects={projects}
+        query={query}
+        results={results}
+        searchError={error}
+        selectedBounds={selectedBounds}
+        selectedFindingId={selectedFindingId}
+        selectedPlace={selectedPlace}
+        selectionAreaKm2={selectionAreaKm2}
+        selectionError={selectionError}
+      />}
+    />
   );
 }
 
