@@ -29,6 +29,8 @@ import {
   toUserEditsPayload
 } from "./drawing-document-bridge";
 import type { DrawingObjectV1 } from "../shared/drawing-document";
+import type { AnalysisFinding } from "../shared/analysis-findings";
+import { AnalysisInspector } from "./components/workspace/analysis-inspector";
 import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
@@ -114,6 +116,7 @@ type ProjectResponse = {
 
 type ChangeAnalysis = {
   disclaimer: string;
+  findings?: AnalysisFinding[];
   pedestrianImpact: string[];
   provider: "rules";
   safetyObservations: string[];
@@ -171,6 +174,22 @@ export default function MapSearch() {
   const [changeAnalysis, setChangeAnalysis] = useState<ChangeAnalysis | null>(null);
   const [isAnalyzingChanges, setIsAnalyzingChanges] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
+  // Task 24: selected analysis finding + the objects revision it was produced
+  // from; a mismatch means findings are stale and highlights must clear.
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  const [analysisObjectsRevision, setAnalysisObjectsRevision] = useState<number | null>(null);
+
+  // Any geometry change invalidates the current selection (Task 24 acceptance:
+  // stale findings clear when geometry changes).
+  useEffect(() => {
+    setSelectedFindingId(null);
+  }, [projectObjectsRevision]);
+
+  const isAnalysisStale =
+    changeAnalysis !== null && analysisObjectsRevision !== null && analysisObjectsRevision !== projectObjectsRevision;
+  const activeFindings = isAnalysisStale ? [] : (changeAnalysis?.findings ?? []);
+  const selectedFinding = activeFindings.find((finding) => finding.id === selectedFindingId) ?? null;
+  const highlightObjectIds = selectedFinding?.objectIds;
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [layerSettings, setLayerSettings] = useState<LayerSettings>(createLayerSettings);
   const [error, setError] = useState<string | null>(null);
@@ -919,6 +938,8 @@ export default function MapSearch() {
       }
 
       setChangeAnalysis(payload.analysis);
+      setAnalysisObjectsRevision(projectObjectsRevision);
+      setSelectedFindingId(null);
       setAnalysisMessage(null);
     } catch (analysisError) {
       setChangeAnalysis(null);
@@ -1367,6 +1388,13 @@ export default function MapSearch() {
                 <p className="rounded border border-[#f5c542]/20 bg-[#f5c542]/10 px-2.5 py-2 text-xs leading-5 text-[#ffe6a1]">
                   {changeAnalysis.disclaimer}
                 </p>
+
+                <AnalysisInspector
+                  findings={activeFindings}
+                  isStale={isAnalysisStale}
+                  onSelectFinding={(finding) => setSelectedFindingId(finding?.id ?? null)}
+                  selectedFindingId={selectedFindingId}
+                />
               </div>
             ) : null}
           </section>
@@ -1458,6 +1486,7 @@ export default function MapSearch() {
                   propertyUpdateRef.current = update;
                 }}
                 onSelectionChange={setInspectedObject}
+                highlightObjectIds={highlightObjectIds}
                 mapRevision={mapRevision}
                 objectsRevision={projectObjectsRevision}
                 onObjectsChange={handleObjectsChange}

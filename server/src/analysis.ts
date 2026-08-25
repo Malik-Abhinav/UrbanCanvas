@@ -10,6 +10,15 @@ import {
 } from "../../shared/network-analysis.js";
 import { analyzePedestrianAccessibility } from "../../shared/pedestrian-analysis.js";
 import { analyzeCyclingDesign } from "../../shared/cycling-analysis.js";
+import type {
+  CyclingFeedbackIssue
+} from "../../shared/cycling-analysis.js";
+import {
+  buildCyclingFindings
+} from "../../shared/analysis-findings.js";
+import type {
+  AnalysisFinding
+} from "../../shared/analysis-findings.js";
 import type { DrawingObjectV1 } from "../../shared/drawing-document.js";
 
 type MapPoint = {
@@ -73,6 +82,8 @@ type AnalysisInput = {
 
 export type ChangeAnalysis = {
   disclaimer: string;
+  /** Geometry-linked structured findings (Task 24); click-to-highlight in UI. */
+  findings: AnalysisFinding[];
   pedestrianImpact: string[];
   provider: "rules";
   safetyObservations: string[];
@@ -91,6 +102,8 @@ export function analyzeProjectChanges(input: unknown): ChangeAnalysis {
     throw new Error(`AI_ANALYSIS_PROVIDER=${provider} is not implemented yet. Use "rules" for the free local analyzer.`);
   }
 
+  const cyclingFeedback = getCyclingDesignFeedback(project.userEdits);
+
   return {
     disclaimer: "Rule-based guidance only. This is not AI-generated engineering advice or a traffic simulation.",
     provider: "rules",
@@ -99,9 +112,10 @@ export function analyzeProjectChanges(input: unknown): ChangeAnalysis {
     pedestrianImpact: [
       ...getPedestrianImpact(counts, roadCount),
       ...getPedestrianNetworkFindings(project.osmData.roads, project.userEdits),
-      ...getCyclingDesignFindings(project.userEdits)
+      ...cyclingFeedback.lines
     ],
-    suggestions: getSuggestions(counts, roadCount, project.bbox)
+    suggestions: getSuggestions(counts, roadCount, project.bbox),
+    findings: buildCyclingFindings(cyclingFeedback.issues)
   };
 }
 
@@ -179,7 +193,10 @@ function getPedestrianNetworkFindings(
  * defaults are assumed; findings are prefixed "Heuristic cycling" and
  * failures never break the analysis endpoint.
  */
-function getCyclingDesignFindings(userEdits: DrawingObject[]): string[] {
+function getCyclingDesignFeedback(userEdits: DrawingObject[]): {
+  issues: CyclingFeedbackIssue[];
+  lines: string[];
+} {
   try {
     const objects: DrawingObjectV1[] = [];
     for (const edit of userEdits) {
@@ -242,16 +259,19 @@ function getCyclingDesignFindings(userEdits: DrawingObject[]): string[] {
 
     const cycling = analyzeCyclingDesign({ objects });
     if (cycling.issues.length === 0) {
-      return objects.length > 0 ? ["Heuristic cycling: no cycling design issues detected."] : [];
+      return {
+        issues: [],
+        lines: objects.length > 0 ? ["Heuristic cycling: no cycling design issues detected."] : []
+      };
     }
 
-    const findings = cycling.issues.map((issue) => `Heuristic cycling: ${issue.message}`);
-    findings.push(
+    const lines = cycling.issues.map((issue) => `Heuristic cycling: ${issue.message}`);
+    lines.push(
       `Heuristic cycling coverage: ${cycling.cyclewayCount} cycleway segment${cycling.cyclewayCount === 1 ? "" : "s"} reviewed (${cycling.protectedLengthMeters} m protected, ${cycling.paintedLengthMeters} m painted).`
     );
-    return findings;
+    return { issues: cycling.issues, lines };
   } catch {
-    return [];
+    return { issues: [], lines: [] };
   }
 }
 

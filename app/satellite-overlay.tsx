@@ -96,6 +96,8 @@ type SatelliteOverlayProps = {
   onBindPropertyUpdate?: (update: (key: string, value: string) => void) => void;
   /** Reports the currently selected V1 object (null when nothing is selected). */
   onSelectionChange?: (object: DrawingObjectV1 | null) => void;
+  /** Object ids to flag visually (e.g. the segment behind a selected analysis finding). */
+  highlightObjectIds?: string[];
   mapRevision: number;
   objectsRevision: number;
   onObjectsChange: (objects: DrawingObjectV1[]) => void;
@@ -329,6 +331,7 @@ export default function SatelliteOverlay({
   layerSettings,
   onBindPropertyUpdate,
   onSelectionChange,
+  highlightObjectIds,
   mapRevision,
   objectsRevision,
   onObjectsChange,
@@ -424,6 +427,37 @@ export default function SatelliteOverlay({
 
     return objects.map((object) => getRenderedObject(object, onMapPointToScreen, converter));
   }, [converter, mapRevision, objects, onMapPointToScreen]);
+  const highlightedIdSet = useMemo(() => new Set(highlightObjectIds ?? []), [highlightObjectIds]);
+  // Analysis-finding highlights (Task 24): flagged objects projected to screen
+  // space so they can be outlined on a dedicated layer without touching how
+  // objects themselves render.
+  const highlightShapes = useMemo(() => {
+    void mapRevision;
+
+    if (highlightedIdSet.size === 0) {
+      return [];
+    }
+
+    return objects
+      .filter((object) => highlightedIdSet.has(object.id))
+      .map((object) =>
+        object.geometry.type === "LineString"
+          ? {
+              id: object.id,
+              points: object.geometry.points.flatMap((point) => {
+                const projected = onMapPointToScreen(point);
+
+                return [projected.x, projected.y];
+              }),
+              point: null as Point | null
+            }
+          : {
+              id: object.id,
+              points: null,
+              point: onMapPointToScreen(object.geometry.point)
+            }
+      );
+  }, [highlightedIdSet, mapRevision, objects, onMapPointToScreen]);
   const projectedRoads = useMemo(() => {
     void mapRevision;
 
@@ -1616,6 +1650,49 @@ export default function SatelliteOverlay({
               />
             ) : null}
           </Group>
+        </Layer>
+        <Layer listening={false}>
+          {highlightShapes.map((shape) =>
+            shape.points ? (
+              <Group key={`highlight-${shape.id}`}>
+                <Line
+                  points={shape.points}
+                  stroke="rgba(99, 230, 190, 0.25)"
+                  strokeWidth={9}
+                  lineCap="round"
+                  lineJoin="round"
+                />
+                <Line
+                  dash={[7, 5]}
+                  points={shape.points}
+                  stroke="#63e6be"
+                  strokeWidth={2.5}
+                />
+              </Group>
+            ) : (
+              <Group key={`highlight-${shape.id}`}>
+                {shape.point ? (
+                  <>
+                    <Circle
+                      x={shape.point.x}
+                      y={shape.point.y}
+                      radius={13}
+                      stroke="rgba(99, 230, 190, 0.3)"
+                      strokeWidth={6}
+                    />
+                    <Circle
+                      x={shape.point.x}
+                      y={shape.point.y}
+                      radius={11}
+                      dash={[5, 4]}
+                      stroke="#63e6be"
+                      strokeWidth={2}
+                    />
+                  </>
+                ) : null}
+              </Group>
+            )
+          )}
         </Layer>
       </Stage>
     </div>
