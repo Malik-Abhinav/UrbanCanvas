@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "22-pedestrian-analysis",
-      "plan_task": 22,
-      "title": "Improve pedestrian and accessibility analysis"
-    },
-    {
       "id": "23-cycling-feedback",
       "plan_task": 23,
       "title": "Improve cycling and road-design feedback"
@@ -76,9 +71,10 @@
     "18-vertex-editing",
     "19-snapping-continuity",
     "20-precision-tools",
-    "21-combined-graph"
+    "21-combined-graph",
+    "22-pedestrian-analysis"
   ],
   "failed": [],
-  "in_flight": null,
+  "in_flight": "23-cycling-feedback",
   "updated_at": "2026-08-24T22:55:00+05:30"
 }

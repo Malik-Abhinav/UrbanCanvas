@@ -81,6 +81,45 @@ describe("analyzeProjectChanges", () => {
 
     expect(analysis.summary).toContain("1 crossing");
   });
+
+  it("surfaces cycling design findings for dangling bike lanes", () => {
+    const analysis = analyzeProjectChanges(
+      makeInput({
+        userEdits: [
+          {
+            id: "bike-1",
+            type: "bike",
+            path: [
+              { lat: 28.61, lng: 77.21 },
+              { lat: 28.611, lng: 77.211 }
+            ],
+            snapped: false
+          }
+        ]
+      })
+    );
+
+    const cyclingLines = analysis.pedestrianImpact.filter((line) =>
+      line.startsWith("Heuristic cycling:")
+    );
+    expect(cyclingLines.join(" ")).toContain("cycle route");
+  });
+
+  it("reports when no cycling design issues are found", () => {
+    const analysis = analyzeProjectChanges(
+      makeInput({
+        userEdits: [
+          { id: "x1", type: "crossing", anchor: { lat: 0, lng: 0 }, pixelVector: { x: 1, y: 2 } }
+        ]
+      })
+    );
+
+    expect(
+      analysis.pedestrianImpact.some(
+        (line) => line.startsWith("Heuristic cycling:") && /no cycling/i.test(line)
+      )
+    ).toBe(true);
+  });
 });
 
 

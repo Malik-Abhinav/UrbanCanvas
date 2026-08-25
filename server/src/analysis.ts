@@ -10,6 +10,8 @@ import {
   buildCombinedNetworkGraphs
 } from "../../shared/network-analysis.js";
 import { analyzePedestrianAccessibility } from "../../shared/pedestrian-analysis.js";
+import { analyzeCyclingDesign } from "../../shared/cycling-analysis.js";
+import type { DrawingObjectV1 } from "../../shared/drawing-document.js";
 
 type MapPoint = {
   lat: number;
@@ -97,7 +99,8 @@ export function analyzeProjectChanges(input: unknown): ChangeAnalysis {
     safetyObservations: getSafetyObservations(counts, roadCount),
     pedestrianImpact: [
       ...getPedestrianImpact(counts, roadCount),
-      ...getPedestrianNetworkFindings(project.osmData.roads, project.userEdits)
+      ...getPedestrianNetworkFindings(project.osmData.roads, project.userEdits),
+      ...getCyclingDesignFindings(project.userEdits)
     ],
     suggestions: getSuggestions(counts, roadCount, project.bbox)
   };
@@ -165,6 +168,88 @@ function getPedestrianNetworkFindings(
       `Heuristic sidewalk coverage: ${pedestrian.sidewalk.coveragePercent}% of the modeled network length is walkable.`
     );
 
+    return findings;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Runs the shared cycling/road-design heuristics (Task 23) over the drawn
+ * edits. Server-side edits carry no cycleway properties, so conservative
+ * defaults are assumed; findings are prefixed "Heuristic cycling" and
+ * failures never break the analysis endpoint.
+ */
+function getCyclingDesignFindings(userEdits: DrawingObject[]): string[] {
+  try {
+    const objects: DrawingObjectV1[] = [];
+    for (const edit of userEdits) {
+      if (
+        (edit.type === "road" || edit.type === "bike" || edit.type === "sidewalk") &&
+        Array.isArray(edit.path) &&
+        edit.path.length >= 2
+      ) {
+        const points = edit.path.map((point) => ({ lat: point.lat, lng: point.lng }));
+        if (edit.type === "bike") {
+          objects.push({
+            id: edit.id,
+            type: "cycleway",
+            geometry: { type: "LineString", points },
+            properties: {
+              direction: "one-way",
+              protection: "painted",
+              widthMetres: 2.5,
+              bufferMetres: 0.5,
+              alignment: "attached"
+            }
+          });
+        } else if (edit.type === "road") {
+          objects.push({
+            id: edit.id,
+            type: "road",
+            geometry: { type: "LineString", points },
+            properties: {
+              lanes: 2,
+              direction: "two-way",
+              laneWidthMetres: 3.5,
+              highwayFunction: "local"
+            }
+          });
+        }
+      } else if (edit.type === "crossing") {
+        objects.push({
+          id: edit.id,
+          type: "crossing",
+          geometry: { type: "Point", point: { lat: edit.anchor.lat, lng: edit.anchor.lng } },
+          properties: {
+            control: "zebra",
+            widthMetres: 3,
+            lengthMetres: 6,
+            bearingDegrees: 0
+          }
+        });
+      } else if (edit.type === "signal") {
+        objects.push({
+          id: edit.id,
+          type: "traffic-signal",
+          geometry: { type: "Point", point: { lat: edit.point.lat, lng: edit.point.lng } },
+          properties: { kind: "mixed" }
+        });
+      } else if (edit.type === "roundabout") {
+        // pixelRadius is screen-space, not metres — skip roundabout geometry.
+        continue;
+      }
+    }
+
+    const cycling = analyzeCyclingDesign({ objects });
+    if (cycling.issues.length === 0) {
+      return objects.length > 0 ? ["Heuristic cycling: no cycling design issues detected."] : [];
+    }
+
+    const findings = cycling.issues.map((issue) => `Heuristic cycling: ${issue.message}`);
+    findings.push(
+      `Heuristic cycling coverage: ${cycling.cyclewayCount} cycleway segment${cycling.cyclewayCount === 1 ? "" : "s"} reviewed (${cycling.protectedLengthMeters} m protected, ${cycling.paintedLengthMeters} m painted).`
+    );
     return findings;
   } catch {
     return [];
