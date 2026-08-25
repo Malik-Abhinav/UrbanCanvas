@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "25-workspace-prototypes",
-      "plan_task": 25,
-      "title": "Produce three high-fidelity workspace prototypes"
-    },
-    {
       "id": "26-design-system",
       "plan_task": 26,
       "title": "Define the production design system"
@@ -64,9 +59,10 @@
     "21-combined-graph",
     "22-pedestrian-analysis",
     "23-cycling-feedback",
-    "24-explainable-analysis"
+    "24-explainable-analysis",
+    "25-workspace-prototypes"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T01:28:00+05:30"
+  "updated_at": "2026-08-26T01:40:00+05:30"
 }

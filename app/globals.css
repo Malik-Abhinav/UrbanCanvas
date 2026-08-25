@@ -1,18 +1,20 @@
+@import "./design-tokens.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
   color-scheme: dark;
-  background: #0b0f12;
-  color: #f8fafc;
+  background: var(--uc-color-page);
+  color: var(--uc-color-text);
 }
 
 /* Visible keyboard focus for every interactive element. */
 :focus-visible {
-  outline: 2px solid #63e6be;
+  outline: var(--uc-focus-outline);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: var(--uc-radius-sm);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -37,62 +39,69 @@ body {
 }
 
 body {
-  background: #0b0f12;
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--uc-color-page);
+  font-family: var(--uc-font-family);
 }
 
 .primary-button {
   align-items: center;
-  background: linear-gradient(135deg, #63e6be 0%, #f5c542 100%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  color: #071114;
+  background: linear-gradient(135deg, var(--uc-color-accent) 0%, var(--uc-color-warning) 100%);
+  border: 1px solid var(--uc-color-border);
+  border-radius: var(--uc-radius-md);
+  color: var(--uc-color-text-on-accent);
   display: inline-flex;
-  font-weight: 700;
+  font-weight: var(--uc-font-weight-bold);
   justify-content: center;
   line-height: 1.25;
   transition:
-    background 160ms ease,
-    box-shadow 160ms ease,
-    opacity 160ms ease,
-    transform 160ms ease;
+    background var(--uc-motion-base) var(--uc-ease-standard),
+    box-shadow var(--uc-motion-base) var(--uc-ease-standard),
+    opacity var(--uc-motion-base) var(--uc-ease-standard),
+    transform var(--uc-motion-base) var(--uc-ease-standard);
 }
 
 .primary-button:hover:not(:disabled) {
-  box-shadow: 0 16px 38px rgba(99, 230, 190, 0.22);
+  box-shadow: var(--uc-shadow-3);
   transform: translateY(-1px);
 }
 
 .primary-button:disabled,
-.secondary-button:disabled {
+.secondary-button:disabled,
+.uc-button:disabled {
+  background-color: var(--uc-color-disabled-bg);
   cursor: not-allowed;
   opacity: 0.52;
   transform: none;
 }
 
+.primary-button:disabled {
+  background: var(--uc-color-disabled-bg);
+  color: var(--uc-color-text-faint);
+}
+
 .secondary-button,
 .icon-button {
   align-items: center;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 10px;
-  color: rgba(248, 250, 252, 0.76);
+  background: var(--uc-color-raised);
+  border: 1px solid var(--uc-color-border-strong);
+  border-radius: var(--uc-radius-md);
+  color: var(--uc-color-text-muted);
   display: inline-flex;
-  font-weight: 700;
+  font-weight: var(--uc-font-weight-bold);
   justify-content: center;
   line-height: 1.25;
   transition:
-    background 160ms ease,
-    border-color 160ms ease,
-    color 160ms ease,
-    transform 160ms ease;
+    background var(--uc-motion-base) var(--uc-ease-standard),
+    border-color var(--uc-motion-base) var(--uc-ease-standard),
+    color var(--uc-motion-base) var(--uc-ease-standard),
+    transform var(--uc-motion-base) var(--uc-ease-standard);
 }
 
 .secondary-button:hover:not(:disabled),
 .icon-button:hover {
-  background: rgba(99, 230, 190, 0.1);
+  background: var(--uc-color-accent-soft);
   border-color: rgba(99, 230, 190, 0.46);
-  color: #f8fafc;
+  color: var(--uc-color-text);
 }
 
 .icon-button {
@@ -101,30 +110,126 @@ body {
 }
 
 .field-input {
-  background: rgba(248, 250, 252, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
-  color: #071114;
-  font-size: 0.875rem;
+  background: var(--uc-color-overlay);
+  border: 1px solid var(--uc-color-border-input);
+  border-radius: var(--uc-radius-md);
+  color: var(--uc-color-text-on-accent);
+  font-size: var(--uc-font-size-sm);
   outline: none;
-  padding: 0.625rem 0.75rem;
+  padding: 0.625rem var(--uc-space-3);
   transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease;
+    border-color var(--uc-motion-base) var(--uc-ease-standard),
+    box-shadow var(--uc-motion-base) var(--uc-ease-standard);
 }
 
 .field-input:focus {
-  border-color: #63e6be;
-  box-shadow: 0 0 0 3px rgba(99, 230, 190, 0.22);
+  border-color: var(--uc-color-accent);
+  box-shadow: var(--uc-focus-ring);
+}
+
+.field-input[aria-invalid="true"] {
+  border-color: var(--uc-color-danger);
+}
+
+.field-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px rgba(255, 107, 87, 0.25);
 }
 
 .info-panel {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
-    rgba(7, 17, 20, 0.78);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    var(--uc-color-panel);
+  border: 1px solid var(--uc-color-border-subtle);
+  border-radius: var(--uc-radius-lg);
+  box-shadow: var(--uc-shadow-1);
+}
+
+/* ---- UI primitives (Task 26) -------------------------------------------- */
+
+.uc-button {
+  gap: var(--uc-space-2);
+  min-height: calc(var(--uc-target-min) - 8px);
+  padding: 0 var(--uc-space-4);
+  position: relative;
+}
+
+.uc-button.uc-button-sm {
+  min-height: 30px;
+  padding: 0 var(--uc-space-3);
+}
+
+.uc-spinner {
+  animation: uc-spin 0.9s linear infinite;
+  border: 2px solid var(--uc-color-border-strong);
+  border-radius: 50%;
+  border-top-color: currentColor;
+  display: inline-block;
+  height: 0.85em;
+  width: 0.85em;
+}
+
+@keyframes uc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.uc-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--uc-space-2);
+}
+
+.uc-field-label {
+  font-size: var(--uc-font-size-xs);
+  font-weight: var(--uc-font-weight-bold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.uc-field-hint {
+  font-size: var(--uc-font-size-2xs);
+  line-height: 1.5;
+}
+
+.uc-field-error {
+  color: #ffd1ca;
+}
+
+.uc-field-success {
+  color: #9ff5da;
+}
+
+.uc-tooltip {
+  display: inline-flex;
+  position: relative;
+}
+
+.uc-tooltip-bubble {
+  background: var(--uc-color-surface);
+  border: 1px solid var(--uc-color-border-strong);
+  border-radius: var(--uc-radius-sm);
+  box-shadow: var(--uc-shadow-2);
+  color: var(--uc-color-text-muted);
+  font-size: var(--uc-font-size-2xs);
+  inset-inline-start: 50%;
+  line-height: 1.4;
+  max-width: 240px;
+  opacity: 0;
+  padding: var(--uc-space-2) var(--uc-space-3);
+  pointer-events: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  transition: opacity var(--uc-motion-fast) var(--uc-ease-standard);
+  white-space: pre-wrap;
+  width: max-content;
+  z-index: 40;
+}
+
+.uc-tooltip:hover .uc-tooltip-bubble,
+.uc-tooltip:focus-within .uc-tooltip-bubble {
+  opacity: 1;
 }
 
 .vertical-brand {
