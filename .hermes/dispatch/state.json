@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "23-cycling-feedback",
-      "plan_task": 23,
-      "title": "Improve cycling and road-design feedback"
-    },
-    {
       "id": "24-explainable-analysis",
       "plan_task": 24,
       "title": "Present explainable analysis on the map"
@@ -72,9 +67,10 @@
     "19-snapping-continuity",
     "20-precision-tools",
     "21-combined-graph",
-    "22-pedestrian-analysis"
+    "22-pedestrian-analysis",
+    "23-cycling-feedback"
   ],
   "failed": [],
-  "in_flight": "23-cycling-feedback",
-  "updated_at": "2026-08-24T22:55:00+05:30"
+  "in_flight": null,
+  "updated_at": "2026-08-26T01:15:00+05:30"
 }
