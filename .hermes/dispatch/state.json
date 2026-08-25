@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "27-decompose-workspace",
-      "plan_task": 27,
-      "title": "Decompose the monolithic workspace"
-    },
-    {
       "id": "28-responsive-modes",
       "plan_task": 28,
       "title": "Implement responsive workspace modes"
@@ -56,9 +51,10 @@
     "23-cycling-feedback",
     "24-explainable-analysis",
     "25-workspace-prototypes",
-    "26-design-system"
+    "26-design-system",
+    "27-decompose-workspace"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T01:40:00+05:30"
+  "updated_at": "2026-08-26T02:05:00+05:30"
 }
