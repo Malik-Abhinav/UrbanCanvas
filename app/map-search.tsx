@@ -14,6 +14,14 @@ import SatelliteOverlay from "./satellite-overlay";
 import ContextInspector from "./components/workspace/context-inspector";
 import LayersPanel from "./components/workspace/layers-panel";
 import {
+  AnalysisMessageBanner,
+  OsmErrorBanner,
+  ProjectDeleteErrorBanner,
+  ProjectMessageBanner,
+  SearchErrorBanner,
+  SelectionErrorBanner
+} from "./components/workspace/status-bar";
+import {
   createLayerSettings,
   setContextOpacity,
   setProposalOpacity,
@@ -1139,11 +1147,7 @@ export default function MapSearch() {
             </div>
           </form>
 
-          {error ? (
-            <p className="mt-4 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]" role="alert">
-              {error}
-            </p>
-          ) : null}
+          <SearchErrorBanner message={error} />
 
           <section className="mt-6">
             <p className="text-xs font-semibold uppercase text-white/45">Focused place</p>
@@ -1179,11 +1183,7 @@ export default function MapSearch() {
               </button>
             </div>
 
-            {selectionError ? (
-              <p className="mt-3 rounded border border-[#f5c542]/30 bg-[#f5c542]/10 px-3 py-2 text-sm leading-6 text-[#ffe6a1]" role="alert">
-                {selectionError}
-              </p>
-            ) : null}
+            <SelectionErrorBanner message={selectionError} />
 
             {selectedBounds ? (
               <div className="info-panel mt-4 p-3">
@@ -1210,25 +1210,17 @@ export default function MapSearch() {
               </div>
             ) : null}
 
-            {osmError ? (
-              <div className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
-                <p>{osmError}</p>
-                {!osmData && isAreaConfirmed && selectedBounds ? (
-                  <button
-                    className="secondary-button mt-2 px-3 py-1.5 text-xs"
-                    disabled={isFetchingOsm || osmRetrySeconds > 0}
-                    onClick={() => void fetchSelectedAreaData(selectedBounds)}
-                    type="button"
-                  >
-                    {isFetchingOsm
-                      ? "Retrying OSM..."
-                      : osmRetrySeconds > 0
-                        ? `Retry OSM in ${osmRetrySeconds}s`
-                        : "Retry OSM"}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
+            <OsmErrorBanner
+              canRetry={!osmData && isAreaConfirmed && selectedBounds !== null}
+              isFetchingOsm={isFetchingOsm}
+              message={osmError}
+              onRetry={() => {
+                if (selectedBounds) {
+                  void fetchSelectedAreaData(selectedBounds);
+                }
+              }}
+              retrySeconds={osmRetrySeconds}
+            />
 
             {osmData ? (
               <div className="info-panel mt-4 p-3">
@@ -1293,17 +1285,9 @@ export default function MapSearch() {
                 : "Sign in to save and reload projects."}
             </p>
 
-            {projectMessage ? (
-              <p aria-live="polite" className="mt-3 rounded border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-6 text-white/70">
-                {projectMessage}
-              </p>
-            ) : null}
+            <ProjectMessageBanner message={projectMessage} />
 
-            {projectDeleteError ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
-                {projectDeleteError}
-              </p>
-            ) : null}
+            <ProjectDeleteErrorBanner message={projectDeleteError} />
 
             {isLoadingProjects ? (
               <div className="mt-4 space-y-2">
@@ -1370,11 +1354,7 @@ export default function MapSearch() {
               Free rule-based feedback now; this endpoint can support Ollama later.
             </p>
 
-            {analysisMessage ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
-                {analysisMessage}
-              </p>
-            ) : null}
+            <AnalysisMessageBanner message={analysisMessage} />
 
             {changeAnalysis ? (
               <div className="info-panel mt-4 space-y-3 p-3">
