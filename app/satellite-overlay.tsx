@@ -1498,6 +1498,7 @@ export default function SatelliteOverlay({
             ? Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
             <Line
               key={`vertical-${index}`}
+              listening={false}
               points={[index * grid.spacing, 0, index * grid.spacing, height]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
@@ -1508,6 +1509,7 @@ export default function SatelliteOverlay({
             ? Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
             <Line
               key={`horizontal-${index}`}
+              listening={false}
               points={[0, index * grid.spacing, width, index * grid.spacing]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
