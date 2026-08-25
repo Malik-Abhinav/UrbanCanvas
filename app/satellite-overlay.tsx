@@ -7,21 +7,12 @@ import type { KeyboardEvent, WheelEvent } from "react";
 import { Circle, Group, Layer, Line, Rect, Stage } from "react-konva";
 import type Konva from "konva";
 import {
-  Bike,
-  CircleDot,
-  Eraser,
-  MousePointer2,
-  RotateCcw,
-  RotateCw,
-  Signal,
-  Slash,
-  SquareDashedMousePointer,
   SquareChevronDown,
   SquareChevronUp,
-  Waypoints,
   ZoomIn,
   ZoomOut
 } from "lucide-react";
+import DrawingToolbar, { drawingTools, type Tool } from "./components/workspace/drawing-toolbar";
 import {
   canRedo,
   canUndo,
@@ -135,8 +126,6 @@ declare global {
     };
   }
 }
-
-type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
 
 /** How close (metres) two line endpoints must be for join-segments to link them. */
 const JOIN_TOLERANCE_METRES = 2;
@@ -308,22 +297,6 @@ type SnapPreview =
 
 const gridSize = 32;
 
-const tools: Array<{
-  Icon: typeof MousePointer2;
-  hint: string;
-  id: Tool;
-  label: string;
-}> = [
-  { id: "select", label: "Select", Icon: MousePointer2, hint: "V" },
-  { id: "road", label: "Road / Lane", Icon: SquareDashedMousePointer, hint: "R" },
-  { id: "bike", label: "Bike Lane", Icon: Bike, hint: "B" },
-  { id: "sidewalk", label: "Sidewalk", Icon: Waypoints, hint: "S" },
-  { id: "crossing", label: "Pedestrian Crossing", Icon: Slash, hint: "C" },
-  { id: "roundabout", label: "Roundabout", Icon: CircleDot, hint: "O" },
-  { id: "signal", label: "Traffic Signal", Icon: Signal, hint: "T" },
-  { id: "erase", label: "Erase", Icon: Eraser, hint: "E" }
-];
-
 export default function SatelliteOverlay({
   getMapZoom,
   height,
@@ -346,7 +319,6 @@ export default function SatelliteOverlay({
   const initialObjectsRef = useRef(initialObjects);
   const panLastPointRef = useRef<Point | null>(null);
   const [activeTool, setActiveTool] = useState<Tool>(() => loadStoredTool() ?? "select");
-  const [hoveredTool, setHoveredTool] = useState<Tool | null>(null);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isGridVisible, setIsGridVisible] = useState(true);
   const [history, dispatchHistory] = useReducer(historyReducer, emptyHistoryState);
@@ -1105,7 +1077,7 @@ export default function SatelliteOverlay({
 
   const paletteCommands: PaletteCommand[] = useMemo(
     () => [
-      ...tools.map((tool) => ({ hint: tool.hint, id: `tool.${tool.id}`, title: `Draw with ${tool.label}` })),
+      ...drawingTools.map((tool) => ({ hint: tool.hint, id: `tool.${tool.id}`, title: `Draw with ${tool.label}` })),
       { hint: "G", id: "view.toggle-grid", title: effectiveGridVisible ? "Hide grid" : "Show grid" },
       { hint: "⇧O", id: "object.offset", title: "Duplicate offset parallel copy" },
       { hint: "⌘D", id: "object.duplicate", title: "Duplicate selection" },
@@ -1228,64 +1200,21 @@ export default function SatelliteOverlay({
       onWheel={handleWheel}
       tabIndex={0}
     >
-      <div className="absolute left-3 top-3 z-10 flex flex-col gap-2 rounded border border-white/20 bg-[#101311]/85 p-2 shadow-xl backdrop-blur">
-        {tools.map(({ Icon, id, label }) => (
-          <button
-            aria-label={label}
-            aria-pressed={activeTool === id}
-            className={`flex h-10 w-10 items-center justify-center rounded border transition ${
-              activeTool === id
-                ? "border-[#f5c542] bg-[#f5c542] text-[#101311]"
-                : "border-white/15 bg-white/10 text-white hover:border-[#f5c542]/70"
-            }`}
-            key={id}
-            onMouseEnter={() => setHoveredTool(id)}
-            onMouseLeave={() => setHoveredTool(null)}
-            onClick={() => {
-              setActiveTool(id);
-              setDraftStart(null);
-              setDraftEnd(null);
-              setChainPoints(null);
-              panLastPointRef.current = null;
-            }}
-            title={label}
-            type="button"
-          >
-            <Icon size={18} />
-          </button>
-        ))}
-        <div className="my-1 h-px bg-white/15" />
-        <button
-          aria-label="Undo"
-          className="flex h-10 w-10 items-center justify-center rounded border border-white/15 bg-white/10 text-white transition hover:border-[#f5c542]/70 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={!canUndo(history)}
-          onClick={undo}
-          title="Undo"
-          type="button"
-        >
-          <RotateCcw size={18} />
-        </button>
-        <button
-          aria-label="Redo"
-          className="flex h-10 w-10 items-center justify-center rounded border border-white/15 bg-white/10 text-white transition hover:border-[#f5c542]/70 disabled:cursor-not-allowed disabled:opacity-40"
-          disabled={!canRedo(history)}
-          onClick={redo}
-          title="Redo"
-          type="button"
-        >
-          <RotateCw size={18} />
-        </button>
-        {history.historyTruncated ? (
-          <span
-            aria-label="Undo history limit reached. The latest 500 changes remain undoable; older changes cannot be undone."
-            className="w-10 rounded border border-[#f5c542]/40 bg-[#f5c542]/10 px-1 py-1 text-center text-[9px] font-semibold leading-tight text-[#ffe6a1]"
-            role="status"
-            title="The latest 500 changes remain undoable; older changes cannot be undone."
-          >
-            500 max
-          </span>
-        ) : null}
-      </div>
+      <DrawingToolbar
+        activeTool={activeTool}
+        canRedo={canRedo(history)}
+        canUndo={canUndo(history)}
+        historyTruncated={history.historyTruncated}
+        onRedo={redo}
+        onSelectTool={(id) => {
+          setActiveTool(id);
+          setDraftStart(null);
+          setDraftEnd(null);
+          setChainPoints(null);
+          panLastPointRef.current = null;
+        }}
+        onUndo={undo}
+      />
 
       {isEditingGeometry && selectedObject && selectedObject.geometry.type === "LineString" ? (
         <div
@@ -1312,12 +1241,6 @@ export default function SatelliteOverlay({
           <p className="max-w-28 text-[9px] leading-tight text-white/40">
             Enter confirms · Escape cancels
           </p>
-        </div>
-      ) : null}
-
-      {hoveredTool ? (
-        <div className="absolute left-[4.75rem] top-3 z-20 rounded border border-white/20 bg-[#101311]/95 px-3 py-2 text-sm font-medium text-white shadow-xl">
-          {getToolLabel(hoveredTool)}
         </div>
       ) : null}
 
@@ -2439,8 +2362,4 @@ function getPolylineLengthMetres(points: MapPoint[]): number {
 
 function createId(type: DrawingObject["type"]) {
   return `${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function getToolLabel(tool: Tool) {
-  return tools.find((item) => item.id === tool)?.label ?? "Tool";
 }
