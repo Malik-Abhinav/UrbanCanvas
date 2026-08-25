@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "26-design-system",
-      "plan_task": 26,
-      "title": "Define the production design system"
-    },
-    {
       "id": "27-decompose-workspace",
       "plan_task": 27,
       "title": "Decompose the monolithic workspace"
@@ -60,7 +55,8 @@
     "22-pedestrian-analysis",
     "23-cycling-feedback",
     "24-explainable-analysis",
-    "25-workspace-prototypes"
+    "25-workspace-prototypes",
+    "26-design-system"
   ],
   "failed": [],
   "in_flight": null,
