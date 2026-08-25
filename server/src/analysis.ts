@@ -6,7 +6,6 @@ import type {
   NetworkProposal
 } from "../../shared/network-analysis.js";
 import {
-  analyzeCombinedTransportNetwork,
   buildCombinedNetworkGraphs
 } from "../../shared/network-analysis.js";
 import { analyzePedestrianAccessibility } from "../../shared/pedestrian-analysis.js";
