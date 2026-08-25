@@ -4,7 +4,7 @@ import { UndirectedGraph } from "graphology";
 import { dijkstra } from "graphology-shortest-path";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { KeyboardEvent, WheelEvent } from "react";
-import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
+import { Circle, Group, Layer, Line, Rect, Stage } from "react-konva";
 import type Konva from "konva";
 import {
   Bike,
@@ -29,19 +29,76 @@ import {
   historyReducer
 } from "./drawing-history";
 import {
+  MIN_CROSSING_LENGTH_PX,
+  MIN_CROSSING_WIDTH_PX,
+  MIN_PATH_WIDTH_PX,
+  MIN_ROUNDABOUT_RADIUS_PX,
+  MIN_ROAD_WIDTH_PX,
+  createMigrationPixelsToMetres,
+  createPixelMetreConverter,
+  getLineObjectWidthMetres,
+  type PixelMetreConverter
+} from "./drawing-document-bridge";
+import { migrateLegacyDrawingArray } from "../shared/legacy-drawing-migration";
+import type { LatLng } from "../shared/geo";
+import type { DrawingObjectV1, LineGeometry } from "../shared/drawing-document";
+import ObjectInspector, { applyPropertyPatch } from "./components/workspace/object-inspector";
+import { GeometryEditorOverlay } from "./geometry-editor";
+import {
+  applyGeometryToLineObject,
+  dragVertex,
+  insertVertexAfter,
+  joinLines,
+  removeVertex,
+  splitLineAtVertex,
+  translateLine
+} from "./drawing-operations";
+import { StyledDrawingObject, type RenderedProposalObject } from "./drawing-renderer";
+import { computeContextRoadStyle, scaleContextAtZoom } from "./drawing-style";
+import {
+  resolveContextOpacity,
+  resolveProposalOpacity,
+  type LayerSettings
+} from "./layer-semantics";
+import {
   getClosestPointOnSegment,
   getDistance,
   getMapDistanceMeters,
   interpolateMapPoint,
-  normalizePoint
+  normalizePoint,
+  snapThresholdPx as snapDistance
 } from "./canvas-geometry";
+import {
+  buildSnapTargets,
+  resolveSnap,
+  type ResolvedSnap,
+  type SnapTarget
+} from "./drawing-snap";
+import {
+  coerceNumericEntry,
+  constrainSegmentDelta,
+  duplicateLineObjectLatLng,
+  resolveCommand,
+  resolveGridSpacing,
+  scalePolylineLength,
+  type CommandId,
+  type PaletteCommand
+} from "./drawing-precision";
+import { metresPerPixelAt } from "./drawing-document-bridge";
+import CommandPalette from "./components/workspace/command-palette";
 
 type SatelliteOverlayProps = {
+  getMapZoom: () => number;
   height: number;
-  initialObjects: DrawingObject[];
+  initialObjects: DrawingObjectV1[];
+  layerSettings: LayerSettings;
+  /** Receives the commit function for inspector edits made outside the canvas. */
+  onBindPropertyUpdate?: (update: (key: string, value: string) => void) => void;
+  /** Reports the currently selected V1 object (null when nothing is selected). */
+  onSelectionChange?: (object: DrawingObjectV1 | null) => void;
   mapRevision: number;
   objectsRevision: number;
-  onObjectsChange: (objects: DrawingObject[]) => void;
+  onObjectsChange: (objects: DrawingObjectV1[]) => void;
   onMapPointToScreen: (point: MapPoint) => Point;
   onMapPan: (delta: Point) => void;
   onScreenPointToMap: (point: Point) => MapPoint;
@@ -67,10 +124,78 @@ type Point = {
   y: number;
 };
 
+declare global {
+  interface Window {
+    /** Fixtures-only test hook; never compiled into production bundles. */
+    __urbanCanvasE2eCanvasState?: () => {
+      objects: DrawingObjectV1[];
+      rendered: RenderedDrawingObject[];
+    };
+  }
+}
+
 type Tool = "select" | "road" | "bike" | "sidewalk" | "crossing" | "roundabout" | "signal" | "erase";
+
+/** How close (metres) two line endpoints must be for join-segments to link them. */
+const JOIN_TOLERANCE_METRES = 2;
+
+/** Minimum on-screen grid cell size before the scale-aware grid hides itself. */
+const MIN_GRID_SPACING_PX = 24;
+const TOOL_STORAGE_KEY = "urbancanvas.activeTool";
+
+function isLineTool(tool: Tool): tool is "road" | "bike" | "sidewalk" {
+  return tool === "road" || tool === "bike" || tool === "sidewalk";
+}
+
+function loadStoredTool(): Tool | null {
+  try {
+    const raw = window.localStorage.getItem(TOOL_STORAGE_KEY);
+
+    return raw === "select" || raw === "road" || raw === "bike" || raw === "sidewalk" || raw === "crossing" ||
+      raw === "roundabout" || raw === "signal" || raw === "erase"
+      ? (raw as Tool)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Width property key differs per line object family in the shared V1 model. */
+function widthKeyForType(type: DrawingObjectV1["type"]): string | null {
+  if (type === "road") {
+    return "laneWidthMetres";
+  }
+
+  if (type === "cycleway") {
+    return "widthMetres";
+  }
+
+  if (type === "footpath") {
+    return "clearWidthMetres";
+  }
+
+  return null;
+}
+
+function readLineWidthMetres(object: DrawingObjectV1): number {
+  const properties = object.properties as unknown as Record<string, unknown>;
+
+  for (const key of ["laneWidthMetres", "clearWidthMetres", "widthMetres"]) {
+    if (typeof properties[key] === "number") {
+      return properties[key] as number;
+    }
+  }
+
+  return 3;
+}
 
 type AnalysisMode = "idle" | "picking-path";
 
+/**
+ * Pointer interactions still create these legacy-shaped objects (pixels), but
+ * they are migrated to DrawingObjectV1 before entering component state, so the
+ * in-memory drawing is always the shared V1 model.
+ */
 export type DrawingObject =
   | {
       id: string;
@@ -96,30 +221,7 @@ export type DrawingObject =
       type: "signal";
     };
 
-type RenderedDrawingObject =
-  | {
-      id: string;
-      type: "road" | "bike" | "sidewalk";
-      points: number[];
-      snapped: boolean;
-    }
-  | {
-      id: string;
-      type: "crossing";
-      start: Point;
-      end: Point;
-    }
-  | {
-      center: Point;
-      id: string;
-      radius: number;
-      type: "roundabout";
-    }
-  | {
-      id: string;
-      point: Point;
-      type: "signal";
-    };
+type RenderedDrawingObject = RenderedProposalObject;
 
 type ProjectedRoad = OsmRoad & {
   points: Point[];
@@ -183,12 +285,14 @@ type SnapPreview =
       object: RenderedDrawingObject;
       path: MapPoint[];
       point: Point;
+      snapKind?: ResolvedSnap["kind"];
       type: "line";
     }
   | {
       end: Point;
       object: RenderedDrawingObject;
       point: Point;
+      snapKind?: ResolvedSnap["kind"];
       start: Point;
       type: "crossing";
     }
@@ -196,33 +300,35 @@ type SnapPreview =
       center: Point;
       centerMap: MapPoint;
       object: RenderedDrawingObject;
+      snapKind?: ResolvedSnap["kind"];
       type: "roundabout";
     };
 
 const gridSize = 32;
-const snapDistance = 34;
-const defaultRoadWidth = 22;
-const bikeLaneWidth = 10;
-const sidewalkWidth = 6;
 
 const tools: Array<{
   Icon: typeof MousePointer2;
+  hint: string;
   id: Tool;
   label: string;
 }> = [
-  { id: "select", label: "Select", Icon: MousePointer2 },
-  { id: "road", label: "Road / Lane", Icon: SquareDashedMousePointer },
-  { id: "bike", label: "Bike Lane", Icon: Bike },
-  { id: "sidewalk", label: "Sidewalk", Icon: Waypoints },
-  { id: "crossing", label: "Pedestrian Crossing", Icon: Slash },
-  { id: "roundabout", label: "Roundabout", Icon: CircleDot },
-  { id: "signal", label: "Traffic Signal", Icon: Signal },
-  { id: "erase", label: "Erase", Icon: Eraser }
+  { id: "select", label: "Select", Icon: MousePointer2, hint: "V" },
+  { id: "road", label: "Road / Lane", Icon: SquareDashedMousePointer, hint: "R" },
+  { id: "bike", label: "Bike Lane", Icon: Bike, hint: "B" },
+  { id: "sidewalk", label: "Sidewalk", Icon: Waypoints, hint: "S" },
+  { id: "crossing", label: "Pedestrian Crossing", Icon: Slash, hint: "C" },
+  { id: "roundabout", label: "Roundabout", Icon: CircleDot, hint: "O" },
+  { id: "signal", label: "Traffic Signal", Icon: Signal, hint: "T" },
+  { id: "erase", label: "Erase", Icon: Eraser, hint: "E" }
 ];
 
 export default function SatelliteOverlay({
+  getMapZoom,
   height,
   initialObjects,
+  layerSettings,
+  onBindPropertyUpdate,
+  onSelectionChange,
   mapRevision,
   objectsRevision,
   onObjectsChange,
@@ -236,30 +342,88 @@ export default function SatelliteOverlay({
   const stageRef = useRef<Konva.Stage | null>(null);
   const initialObjectsRef = useRef(initialObjects);
   const panLastPointRef = useRef<Point | null>(null);
-  const [activeTool, setActiveTool] = useState<Tool>("select");
+  const [activeTool, setActiveTool] = useState<Tool>(() => loadStoredTool() ?? "select");
   const [hoveredTool, setHoveredTool] = useState<Tool | null>(null);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [isGridVisible, setIsGridVisible] = useState(true);
   const [history, dispatchHistory] = useReducer(historyReducer, emptyHistoryState);
   const objects = history.present;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draftStart, setDraftStart] = useState<Point | null>(null);
   const [draftEnd, setDraftEnd] = useState<Point | null>(null);
+  // Click-to-place multi-segment chains (in addition to drag drawing): each
+  // click appends a vertex; Enter / double-click commits the whole polyline.
+  const [chainPoints, setChainPoints] = useState<Point[] | null>(null);
+  const shiftHeldRef = useRef(false);
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("idle");
   const [isAnalysisCollapsed, setIsAnalysisCollapsed] = useState(false);
   const [pathStartNodeId, setPathStartNodeId] = useState<string | null>(null);
   const [analysisPath, setAnalysisPath] = useState<AnalysisPath | null>(null);
   const [analysisMessage, setAnalysisMessage] = useState("Pick two road points to show the shortest path.");
+  const selectedObject = useMemo(
+    () => objects.find((object) => object.id === selectedId) ?? null,
+    [objects, selectedId]
+  );
+  // Geometry editing session: active while a line object is selected with the
+  // select tool. Escape reverts to the session snapshot; Enter confirms.
+  const [isEditingGeometry, setIsEditingGeometry] = useState(false);
+  const editSnapshotRef = useRef<DrawingObjectV1 | null>(null);
+  const objectsRef = useRef(objects);
+  const selectedIdRef = useRef(selectedId);
 
+  useEffect(() => {
+    objectsRef.current = objects;
+  }, [objects]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    onSelectionChange?.(selectedObject);
+  }, [onSelectionChange, selectedObject]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TOOL_STORAGE_KEY, activeTool);
+    } catch {
+      // Storage can be unavailable (private mode); tool persistence is best-effort.
+    }
+  }, [activeTool]);
+
+  const effectiveGridVisible = layerSettings.visible.grid && isGridVisible;
+  // The zoom is read lazily at render time through a ref so the converter's
+  // identity stays stable; map revision bumps re-run the dependent memos.
+  const getMapZoomRef = useRef(getMapZoom);
+  const converter = useMemo(
+    () => createPixelMetreConverter({ getZoom: () => getMapZoomRef.current() }),
+    []
+  );
+  const migrationPixelsToMetres = useMemo(() => createMigrationPixelsToMetres(converter), [converter]);
+  // Scale-aware grid: spacing derives from real metres via metresPerPixelAt
+  // and hides itself when no nice spacing stays readable on screen.
+  const gridSpec = useMemo(() => {
+    void mapRevision;
+
+    const latitude = osmRoads[0]?.geometry[0]?.lat ?? 0;
+
+    return resolveGridSpacing({
+      metresPerPixel: metresPerPixelAt(latitude, getMapZoomRef.current()),
+      minSpacingPx: MIN_GRID_SPACING_PX
+    });
+  }, [mapRevision, osmRoads]);
   const grid = useMemo(() => {
-    const verticalLines = Math.ceil(width / gridSize);
-    const horizontalLines = Math.ceil(height / gridSize);
+    const spacing = gridSpec?.spacingPx ?? gridSize;
+    const verticalLines = Math.ceil(width / spacing);
+    const horizontalLines = Math.ceil(height / spacing);
 
-    return { horizontalLines, verticalLines };
-  }, [height, width]);
+    return { horizontalLines, spacing, verticalLines };
+  }, [gridSpec, height, width]);
   const renderedObjects = useMemo(() => {
     void mapRevision;
 
-    return objects.map((object) => getRenderedObject(object, onMapPointToScreen));
-  }, [mapRevision, objects, onMapPointToScreen]);
+    return objects.map((object) => getRenderedObject(object, onMapPointToScreen, converter));
+  }, [converter, mapRevision, objects, onMapPointToScreen]);
   const projectedRoads = useMemo(() => {
     void mapRevision;
 
@@ -270,11 +434,37 @@ export default function SatelliteOverlay({
         points: road.geometry.map((point) => onMapPointToScreen(point))
       }));
   }, [mapRevision, onMapPointToScreen, osmRoads]);
+  // Editing is active whenever a drawing tool is selected or a draft object
+  // is in flight; existing context dims while this holds.
+  const isEditing = activeTool !== "select" || draftStart !== null;
+  const effectiveContextOpacity = resolveContextOpacity(layerSettings, isEditing);
+  const effectiveProposalOpacity = resolveProposalOpacity(layerSettings);
+  const contextRoadStyles = useMemo(() => {
+    void mapRevision;
+
+    const latitude = osmRoads[0]?.geometry[0]?.lat ?? 0;
+    const context = scaleContextAtZoom(latitude, getMapZoom());
+
+    return new Map(projectedRoads.map((road) => [road.id, computeContextRoadStyle(road.kind, context)]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapRevision, projectedRoads]);
   const roundaboutSnaps = useMemo(() => {
     void mapRevision;
 
-    return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap);
-  }, [mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
+    return getRoundaboutSnapPoints(objects, onMapPointToScreen, onScreenPointToMap, converter);
+  }, [converter, mapRevision, objects, onMapPointToScreen, onScreenPointToMap]);
+  // Network-continuity snap targets: OSM segments/endpoints/intersections,
+  // proposal object geometry, and roundabout circumference connection points.
+  const snapTargets = useMemo(() => {
+    void mapRevision;
+
+    return buildSnapTargets({
+      metresToPixels: (metres, at) => converter.metresToPixels(metres, at),
+      osmRoads,
+      project: onMapPointToScreen,
+      proposalObjects: objects
+    });
+  }, [converter, mapRevision, objects, onMapPointToScreen, osmRoads]);
   const snapPreview = useMemo(() => {
     if (!draftStart || !draftEnd) {
       return null;
@@ -287,9 +477,11 @@ export default function SatelliteOverlay({
       projectedRoads,
       roundaboutSnaps,
       onMapPointToScreen,
-      onScreenPointToMap
+      onScreenPointToMap,
+      snapTargets,
+      () => getMapZoomRef.current()
     );
-  }, [activeTool, draftEnd, draftStart, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps]);
+  }, [activeTool, draftEnd, draftStart, getMapZoomRef, onMapPointToScreen, onScreenPointToMap, projectedRoads, roundaboutSnaps, snapTargets]);
   const graphAnalysis = useMemo(() => {
     void mapRevision;
 
@@ -325,6 +517,23 @@ export default function SatelliteOverlay({
   }, [initialObjects]);
 
   useEffect(() => {
+    getMapZoomRef.current = getMapZoom;
+  }, [getMapZoom]);
+
+  // E2E fixture support: expose the live V1 objects and their rendered pixel
+  // geometry so tests can assert scale-dependent widths. The NODE_ENV check
+  // comes first so production builds eliminate this block entirely (the
+  // fixtures flag string must never appear in production bundles).
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1") {
+      window.__urbanCanvasE2eCanvasState = () => ({
+        objects,
+        rendered: renderedObjects
+      });
+    }
+  });
+
+  useEffect(() => {
     dispatchHistory({ objects: initialObjectsRef.current, type: "replace-all" });
     setSelectedId(null);
     setDraftStart(null);
@@ -352,7 +561,41 @@ export default function SatelliteOverlay({
     return pointer;
   }
 
+  function clearDrafting() {
+    setDraftStart(null);
+    setDraftEnd(null);
+    setChainPoints(null);
+  }
+
+  /**
+   * Applies the Shift angle constraint at the input boundary: the raw end is
+   * unprojected to map coordinates, constrained in a local-metre frame
+   * relative to the anchor, then projected back to screen space.
+   */
+  function applyAngleConstraint(anchor: Point, rawEnd: Point): Point {
+    if (!shiftHeldRef.current) {
+      return rawEnd;
+    }
+
+    const METRES_PER_DEGREE = 111320;
+    const anchorMap = onScreenPointToMap(anchor);
+    const endMap = onScreenPointToMap(rawEnd);
+    const referenceLat = (anchorMap.lat * Math.PI) / 180;
+    const deltaLocal = {
+      x: (endMap.lng - anchorMap.lng) * METRES_PER_DEGREE * Math.cos(referenceLat),
+      y: (endMap.lat - anchorMap.lat) * METRES_PER_DEGREE
+    };
+    const constrained = constrainSegmentDelta({ x: 0, y: 0 }, deltaLocal, true);
+
+    return onMapPointToScreen({
+      lat: anchorMap.lat + constrained.y / METRES_PER_DEGREE,
+      lng: anchorMap.lng + constrained.x / (METRES_PER_DEGREE * Math.cos(referenceLat))
+    });
+  }
+
   function handleStagePointerDown(event: Konva.KonvaEventObject<PointerEvent>) {
+    shiftHeldRef.current = event.evt.shiftKey;
+
     if (event.target !== event.target.getStage() && event.target.name() !== "drawing-surface") {
       return;
     }
@@ -386,11 +629,17 @@ export default function SatelliteOverlay({
       return;
     }
 
+    if (!chainPoints) {
+      setChainPoints([point]);
+    }
+
     setDraftStart(point);
     setDraftEnd(point);
   }
 
-  function handleStagePointerMove() {
+  function handleStagePointerMove(event: Konva.KonvaEventObject<PointerEvent>) {
+    shiftHeldRef.current = event.evt.shiftKey;
+
     if (activeTool === "select" && panLastPointRef.current) {
       const point = getPointerPoint();
       if (!point) {
@@ -414,7 +663,27 @@ export default function SatelliteOverlay({
       return;
     }
 
-    setDraftEnd(point);
+    // Anchor for the Shift constraint: the last placed chain vertex while a
+    // click-chain is active, otherwise the drag origin.
+    const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
+
+    setDraftEnd(applyAngleConstraint(anchor, point));
+  }
+
+  /** Commits every vertex of the active click-chain as one multi-segment object. */
+  function commitChain() {
+    if (!chainPoints || chainPoints.length < 2 || !isLineTool(activeTool)) {
+      clearDrafting();
+      return;
+    }
+
+    pushObject({
+      id: createId(activeTool),
+      path: chainPoints.map((point) => onScreenPointToMap(point)),
+      snapped: false,
+      type: activeTool
+    });
+    clearDrafting();
   }
 
   function handleStagePointerUp() {
@@ -425,27 +694,44 @@ export default function SatelliteOverlay({
     }
 
     const distance = getDistance(draftStart, draftEnd);
+
     if (distance < 6) {
-      setDraftStart(null);
-      setDraftEnd(null);
+      // A click while a line tool is active places a chain vertex instead of
+      // cancelling; the polyline commits on Enter / double-click / tool switch.
+      if (isLineTool(activeTool)) {
+        const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
+
+        setChainPoints((current) => [...(current ?? [anchor])]);
+        setDraftStart(anchor);
+        setDraftEnd(anchor);
+      } else {
+        clearDrafting();
+      }
+
       return;
     }
 
-    if (activeTool === "road" || activeTool === "bike" || activeTool === "sidewalk") {
+    const constrainedEnd = draftEnd;
+
+    if (isLineTool(activeTool)) {
       const snappedLine = snapPreview?.type === "line" ? snapPreview : null;
+      const anchor = chainPoints?.[chainPoints.length - 1] ?? draftStart;
 
       pushObject({
         id: createId(activeTool),
-        path: snappedLine?.path ?? [onScreenPointToMap(draftStart), onScreenPointToMap(draftEnd)],
+        path:
+          snappedLine?.path ?? [onScreenPointToMap(anchor), onScreenPointToMap(constrainedEnd)],
         snapped: Boolean(snappedLine),
         type: activeTool
       });
+      clearDrafting();
+      return;
     }
 
     if (activeTool === "crossing") {
       const crossing = snapPreview?.type === "crossing" ? snapPreview : null;
       const start = crossing?.start ?? draftStart;
-      const end = crossing?.end ?? draftEnd;
+      const end = crossing?.end ?? constrainedEnd;
 
       pushObject({
         anchor: onScreenPointToMap(start),
@@ -466,14 +752,42 @@ export default function SatelliteOverlay({
       });
     }
 
-    setDraftStart(null);
-    setDraftEnd(null);
+    clearDrafting();
   }
 
   function pushObject(object: DrawingObject) {
-    dispatchHistory({ object, type: "add" });
-    setSelectedId(object.id);
+    // Migrate at the boundary: pointer output is legacy-shaped (pixels), but
+    // component state only ever holds shared-model DrawingObjectV1 objects.
+    const [migrated] = migrateLegacyDrawingArray([object], {
+      pixelsToMetres: migrationPixelsToMetres
+    }).document.objects;
+
+    if (!migrated) {
+      return;
+    }
+
+    dispatchHistory({ object: migrated, type: "add" });
+    setSelectedId(migrated.id);
   }
+
+  function updateSelectedProperty(key: string, value: string) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object) {
+      return;
+    }
+
+    // Coerce/filter through the inspector's patch logic, then commit as an
+    // in-place property update — the object keeps its identity and undo works.
+    const patched = applyPropertyPatch(object, { [key]: value });
+
+    dispatchHistory({ id: object.id, properties: patched.properties as Record<string, unknown>, type: "update" });
+  }
+
+  useEffect(() => {
+    onBindPropertyUpdate?.(updateSelectedProperty);
+  });
 
   function removeObject(id: string) {
     dispatchHistory({ id, type: "remove" });
@@ -506,27 +820,287 @@ export default function SatelliteOverlay({
     }
 
     setSelectedId(id);
+
+    // Entering a geometry editing session for line objects: snapshot for Escape.
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (object && object.geometry.type === "LineString") {
+      editSnapshotRef.current = object;
+      setIsEditingGeometry(true);
+    } else {
+      editSnapshotRef.current = null;
+      setIsEditingGeometry(false);
+    }
   }
 
+  function exitGeometryEditing() {
+    setIsEditingGeometry(false);
+    editSnapshotRef.current = null;
+  }
+
+  function cancelGeometryEditing() {
+    const snapshot = editSnapshotRef.current;
+    const id = selectedIdRef.current;
+
+    if (snapshot && id && objectsRef.current.some((object) => object.id === id)) {
+      dispatchHistory({ id, object: snapshot, type: "update-object" });
+    }
+
+    setSelectedId(null);
+    exitGeometryEditing();
+  }
+
+  function commitGeometry(id: string, geometry: LineGeometry) {
+    const current = objectsRef.current.find((object) => object.id === id);
+    const next = current ? applyGeometryToLineObject(current, geometry) : null;
+
+    if (!next) {
+      return;
+    }
+
+    dispatchHistory({ id, object: next, type: "update-object" });
+  }
+
+  function handleDragVertex(vertexIndex: number, point: LatLng) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: dragVertex(object.geometry.points, vertexIndex, point),
+      type: "LineString"
+    });
+  }
+
+  function handleAddVertex(segmentIndex: number, point: LatLng) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: insertVertexAfter(object.geometry.points, segmentIndex, point),
+      type: "LineString"
+    });
+  }
+
+  function handleRemoveVertex(vertexIndex: number) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const points = removeVertex(object.geometry.points, vertexIndex);
+
+    if (points) {
+      commitGeometry(object.id, { points, type: "LineString" });
+    }
+  }
+
+  function handleMoveObject(delta: { dLat: number; dLng: number }) {
+    const id = selectedIdRef.current;
+    const object = objectsRef.current.find((candidate) => candidate.id === id);
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    commitGeometry(object.id, {
+      points: translateLine(object.geometry.points, delta),
+      type: "LineString"
+    });
+  }
+
+  /** Splits the selected line at its middle interior vertex into two objects. */
+  function handleSplitSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const parts = splitLineAtVertex(object.geometry.points, Math.floor(object.geometry.points.length / 2));
+
+    if (!parts) {
+      return;
+    }
+
+    const [head, tail] = parts;
+    const newId = `${object.id}-split-${Date.now().toString(36)}`;
+    const splitPart = { ...object, geometry: { ...object.geometry, points: tail }, id: newId } as DrawingObjectV1;
+
+    commitGeometry(object.id, { points: head, type: "LineString" });
+    dispatchHistory({ object: splitPart, type: "add" });
+    setSelectedId(newId);
+    editSnapshotRef.current = splitPart;
+  }
+
+  /** Joins the selected line with the nearest touching line of the same type. */
+  function handleJoinSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const endpoint = object.geometry.points[object.geometry.points.length - 1];
+
+    if (!endpoint) {
+      return;
+    }
+
+    const partner = objects.find(
+      (candidate) =>
+        candidate.id !== object.id &&
+        candidate.type === object.type &&
+        candidate.geometry.type === "LineString" &&
+        getMapDistanceMeters(candidate.geometry.points[0], endpoint) <= JOIN_TOLERANCE_METRES
+    );
+
+    if (!partner || partner.geometry.type !== "LineString") {
+      return;
+    }
+
+    const joinedPoints = joinLines(object.geometry.points, partner.geometry.points);
+
+    commitGeometry(object.id, { points: joinedPoints, type: "LineString" });
+    dispatchHistory({ id: partner.id, type: "remove" });
+  }
+
+  /** Duplicates the selected line as a parallel copy offset by its width. */
+  function handleOffsetSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const copy = duplicateLineObjectLatLng(
+      object,
+      `${object.id}-offset-${Date.now().toString(36)}`,
+      readLineWidthMetres(object) * 2 + 2
+    );
+
+    if (!copy) {
+      return;
+    }
+
+    dispatchHistory({ object: copy, type: "add" });
+    setSelectedId(copy.id);
+  }
+
+  /** Duplicates the selected line in place (⌘D). */
+  function handleDuplicateSelected() {
+    const object = selectedObject;
+
+    if (!object || object.geometry.type !== "LineString") {
+      return;
+    }
+
+    const copy = duplicateLineObjectLatLng(
+      object,
+      `${object.id}-copy-${Date.now().toString(36)}`,
+      0
+    );
+
+    if (!copy) {
+      return;
+    }
+
+    dispatchHistory({ object: copy, type: "add" });
+    setSelectedId(copy.id);
+  }
+
+  /** Numeric length entry: rescales the selected line about its first vertex. */
+  function commitNumericLength(raw: string) {
+    const object = selectedObject;
+    const metres = coerceNumericEntry(raw, { max: 9999, min: 1 });
+
+    if (!object || object.geometry.type !== "LineString" || metres === null) {
+      return;
+    }
+
+    const points = scalePolylineLength(object.geometry.points, metres);
+
+    if (points) {
+      commitGeometry(object.id, { points, type: "LineString" });
+    }
+  }
+
+  function handleCommand(id: string) {
+    if (id.startsWith("tool.")) {
+      setActiveTool(id.slice(5) as Tool);
+      clearDrafting();
+      panLastPointRef.current = null;
+      return;
+    }
+
+    switch (id as CommandId | "view.toggle-grid") {
+      case "edit.redo":
+        redo();
+        break;
+      case "edit.undo":
+        undo();
+        break;
+      case "geometry.commit":
+        commitChain();
+        break;
+      case "object.duplicate":
+        handleDuplicateSelected();
+        break;
+      case "object.offset":
+        handleOffsetSelected();
+        break;
+      case "palette.open":
+        setIsPaletteOpen((open) => !open);
+        break;
+      case "view.toggle-grid":
+        setIsGridVisible((visible) => !visible);
+        break;
+      default:
+        break;
+    }
+  }
+
+  const paletteCommands: PaletteCommand[] = useMemo(
+    () => [
+      ...tools.map((tool) => ({ hint: tool.hint, id: `tool.${tool.id}`, title: `Draw with ${tool.label}` })),
+      { hint: "G", id: "view.toggle-grid", title: effectiveGridVisible ? "Hide grid" : "Show grid" },
+      { hint: "⇧O", id: "object.offset", title: "Duplicate offset parallel copy" },
+      { hint: "⌘D", id: "object.duplicate", title: "Duplicate selection" },
+      { hint: "Enter", id: "geometry.commit", title: "Commit multi-segment path" },
+      { hint: "⌘Z", id: "edit.undo", title: "Undo" },
+      { hint: "⌘⇧Z", id: "edit.redo", title: "Redo" }
+    ],
+    [effectiveGridVisible]
+  );
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "y") {
+    // The palette input handles its own keys; never intercept while it's open
+    // except for its close key, which the palette itself consumes.
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
-      panLastPointRef.current = null;
-      redo();
+      setIsPaletteOpen((open) => !open);
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "z") {
-      event.preventDefault();
-      panLastPointRef.current = null;
-      redo();
+    if (isPaletteOpen) {
       return;
     }
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+    const command = resolveCommand(event);
+
+    if (command) {
       event.preventDefault();
       panLastPointRef.current = null;
-      undo();
+      handleCommand(command);
       return;
     }
 
@@ -537,12 +1111,31 @@ export default function SatelliteOverlay({
       return;
     }
 
+    if (event.key === "Enter" && chainPoints) {
+      event.preventDefault();
+      panLastPointRef.current = null;
+      commitChain();
+      return;
+    }
+
+    if (event.key === "Enter" && isEditingGeometry) {
+      event.preventDefault();
+      panLastPointRef.current = null;
+      exitGeometryEditing();
+      return;
+    }
+
     if (event.key === "Escape") {
       setActiveTool("select");
       setAnalysisMode("idle");
-      setDraftStart(null);
-      setDraftEnd(null);
+      clearDrafting();
       panLastPointRef.current = null;
+
+      if (isEditingGeometry) {
+        cancelGeometryEditing();
+        return;
+      }
+
       setSelectedId(null);
     }
   }
@@ -618,6 +1211,7 @@ export default function SatelliteOverlay({
               setActiveTool(id);
               setDraftStart(null);
               setDraftEnd(null);
+              setChainPoints(null);
               panLastPointRef.current = null;
             }}
             title={label}
@@ -647,13 +1241,128 @@ export default function SatelliteOverlay({
         >
           <RotateCw size={18} />
         </button>
+        {history.historyTruncated ? (
+          <span
+            aria-label="Undo history limit reached. The latest 500 changes remain undoable; older changes cannot be undone."
+            className="w-10 rounded border border-[#f5c542]/40 bg-[#f5c542]/10 px-1 py-1 text-center text-[9px] font-semibold leading-tight text-[#ffe6a1]"
+            role="status"
+            title="The latest 500 changes remain undoable; older changes cannot be undone."
+          >
+            500 max
+          </span>
+        ) : null}
       </div>
+
+      {isEditingGeometry && selectedObject && selectedObject.geometry.type === "LineString" ? (
+        <div
+          aria-label="Geometry editing tools"
+          className="absolute left-[4.75rem] top-3 z-10 flex flex-col gap-1 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur"
+          role="toolbar"
+        >
+          <button
+            className="rounded border border-white/15 bg-white/10 px-2 py-1 text-xs transition hover:border-[#f5c542]/70"
+            onClick={handleSplitSelected}
+            title="Split this line into two at its middle vertex"
+            type="button"
+          >
+            Split line
+          </button>
+          <button
+            className="rounded border border-white/15 bg-white/10 px-2 py-1 text-xs transition hover:border-[#f5c542]/70"
+            onClick={handleJoinSelected}
+            title="Join this line with a touching line of the same kind"
+            type="button"
+          >
+            Join segments
+          </button>
+          <p className="max-w-28 text-[9px] leading-tight text-white/40">
+            Enter confirms · Escape cancels
+          </p>
+        </div>
+      ) : null}
 
       {hoveredTool ? (
         <div className="absolute left-[4.75rem] top-3 z-20 rounded border border-white/20 bg-[#101311]/95 px-3 py-2 text-sm font-medium text-white shadow-xl">
           {getToolLabel(hoveredTool)}
         </div>
       ) : null}
+
+      {selectedObject ? (
+        <div className="absolute bottom-3 left-3 z-10 w-56">
+          <ObjectInspector object={selectedObject} onPropertyChange={updateSelectedProperty} />
+          {selectedObject.geometry.type === "LineString" ? (
+            <div
+              aria-label="Numeric geometry entry"
+              className="mt-2 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur"
+            >
+              <p className="text-[10px] font-semibold uppercase text-white/45">Numeric entry</p>
+              <div className="mt-1.5 flex gap-2">
+                <label className="flex-1 text-[10px] uppercase text-white/50">
+                  Length m
+                  <input
+                    className="mt-0.5 w-full rounded border border-white/15 bg-white/10 px-1.5 py-1 text-xs text-white focus:border-[#f5c542] focus:outline-none"
+                    data-testid="numeric-length"
+                    defaultValue={String(Math.round(getPolylineLengthMetres(selectedObject.geometry.points)))}
+                    key={`length-${selectedObject.id}-${selectedObject.geometry.points.length}`}
+                    onBlur={(event) => commitNumericLength(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        commitNumericLength(event.currentTarget.value);
+                        event.currentTarget.blur();
+                      }
+                    }}
+                    placeholder="e.g. 120"
+                    type="text"
+                  />
+                </label>
+                {widthKeyForType(selectedObject.type) ? (
+                  <label className="flex-1 text-[10px] uppercase text-white/50">
+                    Width m
+                    <input
+                      className="mt-0.5 w-full rounded border border-white/15 bg-white/10 px-1.5 py-1 text-xs text-white focus:border-[#f5c542] focus:outline-none"
+                      data-testid="numeric-width"
+                      defaultValue={String(readLineWidthMetres(selectedObject))}
+                      key={`width-${selectedObject.id}`}
+                      onBlur={(event) => {
+                        const value = coerceNumericEntry(event.target.value, { max: 20, min: 0 });
+
+                        if (value !== null && widthKeyForType(selectedObject.type)) {
+                          updateSelectedProperty(widthKeyForType(selectedObject.type) as string, String(value));
+                        }
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const input = event.currentTarget;
+                          const value = coerceNumericEntry(input.value, { max: 20, min: 0 });
+
+                          if (value !== null && widthKeyForType(selectedObject.type)) {
+                            updateSelectedProperty(widthKeyForType(selectedObject.type) as string, String(value));
+                          }
+
+                          input.blur();
+                        }
+                      }}
+                      placeholder="e.g. 3.5"
+                      type="text"
+                    />
+                  </label>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <CommandPalette
+        commands={paletteCommands}
+        onClose={() => setIsPaletteOpen(false)}
+        onRun={handleCommand}
+        open={isPaletteOpen}
+      />
 
       <div className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded border border-white/20 bg-[#101311]/85 p-2 text-white shadow-xl backdrop-blur">
         <button
@@ -752,6 +1461,11 @@ export default function SatelliteOverlay({
 
       <Stage
         height={height}
+        onDblClick={() => {
+          if (chainPoints) {
+            commitChain();
+          }
+        }}
         onClick={(event) => {
           if (
             (event.target === event.target.getStage() || event.target.name() === "drawing-surface") &&
@@ -780,24 +1494,50 @@ export default function SatelliteOverlay({
             x={0}
             y={0}
           />
-          {Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
+          {effectiveGridVisible && gridSpec
+            ? Array.from({ length: grid.verticalLines + 1 }, (_, index) => (
             <Line
               key={`vertical-${index}`}
-              points={[index * gridSize, 0, index * gridSize, height]}
+              points={[index * grid.spacing, 0, index * grid.spacing, height]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
-          ))}
-          {Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
+          ))
+            : null}
+          {effectiveGridVisible && gridSpec
+            ? Array.from({ length: grid.horizontalLines + 1 }, (_, index) => (
             <Line
               key={`horizontal-${index}`}
-              points={[0, index * gridSize, width, index * gridSize]}
+              points={[0, index * grid.spacing, width, index * grid.spacing]}
               stroke="rgba(255, 255, 255, 0.18)"
               strokeWidth={1}
             />
-          ))}
+          ))
+            : null}
 
-          {renderedDeadEndEdges.map((edge) => (
+          {layerSettings.visible.osmRoads
+            ? projectedRoads.map((road) => {
+              const style = contextRoadStyles.get(road.id);
+
+              if (!style) {
+                return null;
+              }
+
+              return (
+                <Line
+                  key={`context-road-${road.id}`}
+                  lineCap="round"
+                  lineJoin="round"
+                  opacity={effectiveContextOpacity}
+                  points={road.points.flatMap((point) => [point.x, point.y])}
+                  stroke={style.color}
+                  strokeWidth={style.widthPx}
+                />
+              );
+            })
+            : null}
+
+          {layerSettings.visible.analysis && renderedDeadEndEdges.map((edge) => (
             <Line
               key={edge.id}
               lineCap="round"
@@ -809,7 +1549,7 @@ export default function SatelliteOverlay({
             />
           ))}
 
-          {renderedAnalysisPath ? (
+          {layerSettings.visible.analysis && renderedAnalysisPath ? (
             <Line
               dash={[18, 8]}
               lineCap="round"
@@ -822,7 +1562,7 @@ export default function SatelliteOverlay({
             />
           ) : null}
 
-          {renderedPathStart ? (
+          {layerSettings.visible.analysis && renderedPathStart ? (
             <Circle
               fill="#60a5fa"
               radius={8}
@@ -833,24 +1573,47 @@ export default function SatelliteOverlay({
             />
           ) : null}
 
-          {renderedObjects.map((object) => (
-            <DrawingObjectShape
-              isSelected={object.id === selectedId}
-              key={object.id}
-              object={object}
-              onClick={(event) => handleObjectClick(event, object.id)}
-            />
-          ))}
+          <Group opacity={layerSettings.visible.proposal ? effectiveProposalOpacity : 0}>
+            {renderedObjects.map((object) => (
+              <StyledDrawingObject
+                isSelected={object.id === selectedId}
+                key={object.id}
+                object={object}
+                onClick={(event) => handleObjectClick(event, object.id)}
+              />
+            ))}
 
-          {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
+            {snapPreview ? <SnapIndicator preview={snapPreview} /> : null}
 
-          {draftStart && draftEnd ? (
-            <DrawingObjectShape
-              isDraft
-              isSelected={false}
-              object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
-            />
-          ) : null}
+            {isEditingGeometry && activeTool === "select" && selectedObject ? (
+              <GeometryEditorOverlay
+                object={selectedObject}
+                onAddVertex={handleAddVertex}
+                onDragVertex={handleDragVertex}
+                onMoveObject={handleMoveObject}
+                onRemoveVertex={handleRemoveVertex}
+                projectMapPoint={onMapPointToScreen}
+                unprojectScreenPoint={onScreenPointToMap}
+              />
+            ) : null}
+
+            {draftStart && draftEnd ? (
+              <StyledDrawingObject
+                isDraft
+                isSelected={false}
+                object={snapPreview?.object ?? getDraftObject(activeTool, draftStart, draftEnd)}
+              />
+            ) : null}
+
+            {chainPoints && draftEnd ? (
+              <Line
+                dash={[8, 6]}
+                points={chainPoints.flatMap((point) => [point.x, point.y]).concat(draftEnd.x, draftEnd.y)}
+                stroke="#f5c542"
+                strokeWidth={2}
+              />
+            ) : null}
+          </Group>
         </Layer>
       </Stage>
     </div>
@@ -881,6 +1644,23 @@ function SnapIndicator({ preview }: { preview: SnapPreview }) {
     );
   }
 
+  // Intersection snaps draw as an open ring so exact crossings read
+  // differently from endpoint/segment connections; all previews keep the
+  // #f5c542 accent on graphite.
+  if (preview.snapKind === "intersection") {
+    return (
+      <Circle
+        dash={[3, 3]}
+        fill="rgba(16, 19, 17, 0.35)"
+        radius={9}
+        stroke="#f5c542"
+        strokeWidth={2.5}
+        x={preview.point.x}
+        y={preview.point.y}
+      />
+    );
+  }
+
   return (
     <Circle
       fill="#f5c542"
@@ -894,158 +1674,6 @@ function SnapIndicator({ preview }: { preview: SnapPreview }) {
   );
 }
 
-function DrawingObjectShape({
-  isDraft = false,
-  isSelected,
-  object,
-  onClick
-}: {
-  isDraft?: boolean;
-  isSelected: boolean;
-  object: RenderedDrawingObject;
-  onClick?: (event: Konva.KonvaEventObject<MouseEvent>) => void;
-}) {
-  const opacity = isDraft ? 0.72 : 1;
-  const selectionStroke = isSelected ? "#f5c542" : "transparent";
-
-  if (object.type === "road") {
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#222729"
-          strokeWidth={defaultRoadWidth}
-        />
-        <Line
-          dash={[12, 10]}
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#d8d2c4"
-          strokeWidth={2}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={defaultRoadWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "bike") {
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#22c55e"
-          strokeWidth={bikeLaneWidth}
-        />
-        <Line
-          dash={[6, 7]}
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#ddffe9"
-          strokeWidth={1.5}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={bikeLaneWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "sidewalk") {
-    return (
-      <Group opacity={opacity} onClick={onClick}>
-        <Line
-          lineCap="round"
-          lineJoin="round"
-          points={object.points}
-          stroke="#e5e7eb"
-          strokeWidth={sidewalkWidth}
-        />
-        {isSelected ? <SelectionLine points={object.points} width={sidewalkWidth + 7} /> : null}
-      </Group>
-    );
-  }
-
-  if (object.type === "crossing") {
-    const { angle, length, midpoint } = getSegmentMetrics(object.start, object.end);
-
-    return (
-      <Group onClick={onClick} opacity={opacity} rotation={angle} x={midpoint.x} y={midpoint.y}>
-        <Rect fill="#1f2425" height={28} offsetX={length / 2} offsetY={14} width={length} />
-        {[-10, -2, 6].map((x) => (
-          <Rect fill="#f8fafc" height={24} key={x} offsetY={12} width={4} x={x} y={0} />
-        ))}
-        <Rect
-          height={34}
-          offsetX={length / 2}
-          offsetY={17}
-          stroke={selectionStroke}
-          strokeWidth={isSelected ? 2 : 0}
-          width={length}
-        />
-      </Group>
-    );
-  }
-
-  if (object.type === "roundabout") {
-    return (
-      <Group onClick={onClick} opacity={opacity}>
-        <Circle
-          fill="rgba(31, 36, 37, 0.78)"
-          radius={object.radius}
-          stroke="#d8d2c4"
-          strokeWidth={4}
-          x={object.center.x}
-          y={object.center.y}
-        />
-        <Circle
-          fill="rgba(16, 19, 17, 0.75)"
-          radius={Math.max(8, object.radius * 0.42)}
-          stroke="#f5c542"
-          strokeWidth={isSelected ? 3 : 1.5}
-          x={object.center.x}
-          y={object.center.y}
-        />
-        {[0, 90, 180, 270].map((rotation) => (
-          <Line
-            key={rotation}
-            points={[object.center.x, object.center.y - object.radius, object.center.x, object.center.y - object.radius - 20]}
-            rotation={rotation}
-            stroke="#1f2425"
-            strokeWidth={10}
-          />
-        ))}
-      </Group>
-    );
-  }
-
-  if (object.type === "signal") {
-    return (
-      <Group onClick={onClick} opacity={opacity} x={object.point.x} y={object.point.y}>
-        <Circle fill="#60a5fa" radius={13} stroke={isSelected ? "#f5c542" : "#dbeafe"} strokeWidth={2} />
-        <Text align="center" fill="#101311" fontSize={14} fontStyle="bold" text="T" width={26} x={-13} y={-8} />
-      </Group>
-    );
-  }
-
-  return null;
-}
-
-function SelectionLine({ points, width }: { points: number[]; width: number }) {
-  return (
-    <Line
-      lineCap="round"
-      lineJoin="round"
-      points={points}
-      stroke="#f5c542"
-      strokeWidth={width}
-      opacity={0.34}
-    />
-  );
-}
 
 function getSnapPreview(
   tool: Tool,
@@ -1054,8 +1682,58 @@ function getSnapPreview(
   roads: ProjectedRoad[],
   roundaboutSnaps: RoundaboutSnap[],
   projectMapPoint: (point: MapPoint) => Point,
-  unprojectScreenPoint: (point: Point) => MapPoint
+  unprojectScreenPoint: (point: Point) => MapPoint,
+  snapTargets: readonly SnapTarget[] = [],
+  getZoom: () => number = () => 18
 ): SnapPreview | null {
+  const snapConfig = {
+    latitudeDegrees: unprojectScreenPoint(end).lat,
+    screenThresholdPx: snapDistance,
+    zoom: getZoom()
+  };
+
+  // Network continuity first: connect to exact nodes — OSM endpoints and
+  // intersections, proposal object geometry, roundabout circumference — so
+  // new lines join the network rather than merely approaching it.
+  if (tool === "road" || tool === "bike" || tool === "sidewalk") {
+    const startMap = unprojectScreenPoint(start);
+    const endMap = unprojectScreenPoint(end);
+    const startNode =
+      resolveSnap({ map: startMap, screen: start }, snapTargets, {
+        ...snapConfig,
+        latitudeDegrees: startMap.lat
+      }) ?? undefined;
+    const endNode = resolveSnap({ map: endMap, screen: end }, snapTargets, snapConfig) ?? undefined;
+    const startIsNode = startNode !== undefined && startNode.target.kind !== "segment";
+    const endIsNode = endNode !== undefined && endNode.target.kind !== "segment";
+
+    if (startIsNode || endIsNode) {
+      const nodeSnap = endIsNode ? endNode : startNode;
+      const path = [
+        startIsNode ? startNode!.mapPoint : startMap,
+        endIsNode ? endNode!.mapPoint : endMap
+      ];
+      const points = path.flatMap((point) => {
+        const projected = projectMapPoint(point);
+
+        return [projected.x, projected.y];
+      });
+
+      return {
+        object: {
+          id: "draft-node-snapped-line",
+          points,
+          snapped: true,
+          type: tool
+        },
+        path,
+        point: nodeSnap?.screenPoint ?? end,
+        snapKind: nodeSnap?.kind,
+        type: "line"
+      };
+    }
+  }
+
   if (tool === "road" || tool === "bike" || tool === "sidewalk") {
     const startRoundaboutSnap = getNearestRoundaboutSnap(start, roundaboutSnaps);
     const endRoundaboutSnap = getNearestRoundaboutSnap(end, roundaboutSnaps);
@@ -1115,6 +1793,50 @@ function getSnapPreview(
 
   if (tool === "crossing") {
     const midpoint = getMidpoint(start, end);
+    const midpointMap = unprojectScreenPoint(midpoint);
+
+    // Prefer a perpendicular alignment across the full target carriageway:
+    // resolveSnap reports interior projections as "perpendicular" on request
+    // and carries the segment's screen geometry for exact endpoints.
+    const perpendicular =
+      resolveSnap(
+        { map: midpointMap, screen: midpoint },
+        snapTargets,
+        { ...snapConfig, latitudeDegrees: midpointMap.lat },
+        { interiorSnapKind: "perpendicular" }
+      ) ?? undefined;
+
+    if (perpendicular && perpendicular.target.kind === "segment") {
+      const length = Math.max(30, getDistance(start, end));
+      const tangent = normalizePoint({
+        x: perpendicular.target.screenEnd.x - perpendicular.target.screenStart.x,
+        y: perpendicular.target.screenEnd.y - perpendicular.target.screenStart.y
+      });
+      const normal = normalizePoint({ x: -tangent.y, y: tangent.x });
+      const crossingStart = {
+        x: perpendicular.screenPoint.x - normal.x * (length / 2),
+        y: perpendicular.screenPoint.y - normal.y * (length / 2)
+      };
+      const crossingEnd = {
+        x: perpendicular.screenPoint.x + normal.x * (length / 2),
+        y: perpendicular.screenPoint.y + normal.y * (length / 2)
+      };
+
+      return {
+        end: crossingEnd,
+        object: {
+          end: crossingEnd,
+          id: "draft-snapped-crossing",
+          start: crossingStart,
+          type: "crossing"
+        },
+        point: perpendicular.screenPoint,
+        snapKind: "perpendicular",
+        start: crossingStart,
+        type: "crossing"
+      };
+    }
+
     const snap = getNearestRoadSnap(midpoint, roads);
     if (!snap) {
       return null;
@@ -1217,9 +1939,10 @@ function getNearestRoadVertex(point: Point, roads: ProjectedRoad[]) {
 }
 
 function getRoundaboutSnapPoints(
-  objects: DrawingObject[],
+  objects: DrawingObjectV1[],
   projectMapPoint: (point: MapPoint) => Point,
-  unprojectScreenPoint: (point: Point) => MapPoint
+  unprojectScreenPoint: (point: Point) => MapPoint,
+  converter: PixelMetreConverter
 ) {
   const snapPoints: RoundaboutSnap[] = [];
 
@@ -1228,13 +1951,18 @@ function getRoundaboutSnapPoints(
       continue;
     }
 
-    const center = projectMapPoint(object.center);
+    const centerMap = object.geometry.point;
+    const center = projectMapPoint(centerMap);
+    const pixelRadius = Math.max(
+      MIN_ROUNDABOUT_RADIUS_PX,
+      converter.metresToPixels(object.properties.inscribedCircleDiameterMetres / 2, centerMap)
+    );
 
     for (let index = 0; index < 8; index += 1) {
       const angle = (Math.PI * 2 * index) / 8;
       const point = {
-        x: center.x + Math.cos(angle) * object.pixelRadius,
-        y: center.y + Math.sin(angle) * object.pixelRadius
+        x: center.x + Math.cos(angle) * pixelRadius,
+        y: center.y + Math.sin(angle) * pixelRadius
       };
 
       snapPoints.push({
@@ -1285,12 +2013,12 @@ function getRoadPathBetweenSnaps(start: RoadSnap, end: RoadSnap) {
   return path;
 }
 
-function buildGraphAnalysis(roads: OsmRoad[], objects: DrawingObject[]): GraphAnalysis {
+function buildGraphAnalysis(roads: OsmRoad[], objects: DrawingObjectV1[]): GraphAnalysis {
   const graph = new UndirectedGraph<RoadGraphNode, RoadGraphEdge>();
   const edges: RoadGraphEdge[] = [];
   const sidewalkPaths = objects
-    .filter((object): object is DrawingObject & { path: MapPoint[]; type: "sidewalk" } => object.type === "sidewalk")
-    .map((object) => object.path)
+    .filter((object): object is Extract<DrawingObjectV1, { type: "footpath" }> => object.type === "footpath")
+    .map((object) => object.geometry.points)
     .filter((path) => path.length >= 2);
 
   for (const road of roads) {
@@ -1457,52 +2185,107 @@ function formatDistance(distanceMeters: number) {
 }
 
 function getRenderedObject(
-  object: DrawingObject,
-  projectMapPoint: (point: MapPoint) => Point
+  object: DrawingObjectV1,
+  projectMapPoint: (point: MapPoint) => Point,
+  converter: PixelMetreConverter
 ): RenderedDrawingObject {
   if (object.type === "roundabout") {
-    const center = projectMapPoint(object.center);
+    const center = projectMapPoint(object.geometry.point);
 
     return {
       center,
       id: object.id,
-      radius: object.pixelRadius,
+      metResPerPixel: converter.metresPerPixel(object.geometry.point),
+      properties: {
+        inscribedCircleDiameterMetres: object.properties.inscribedCircleDiameterMetres,
+        lanes: object.properties.lanes
+      },
+      radius: Math.max(
+        MIN_ROUNDABOUT_RADIUS_PX,
+        converter.metresToPixels(object.properties.inscribedCircleDiameterMetres / 2, object.geometry.point)
+      ),
       type: "roundabout"
     };
   }
 
-  if (object.type === "signal") {
+  if (object.type === "traffic-signal") {
     return {
       id: object.id,
-      point: projectMapPoint(object.point),
+      metResPerPixel: converter.metresPerPixel(object.geometry.point),
+      point: projectMapPoint(object.geometry.point),
+      properties: { kind: object.properties.kind },
       type: "signal"
     };
   }
 
   if (object.type === "crossing") {
-    const start = projectMapPoint(object.anchor);
+    const anchor = object.geometry.point;
+    const start = projectMapPoint(anchor);
+    const { bearingDegrees, lengthMetres, widthMetres } = object.properties;
+    const lengthPx = Math.max(MIN_CROSSING_LENGTH_PX, converter.metresToPixels(lengthMetres, anchor));
+    // Bearing runs clockwise from north; screen y grows southwards.
+    const bearingRadians = (bearingDegrees * Math.PI) / 180;
+    const direction = { x: Math.sin(bearingRadians), y: -Math.cos(bearingRadians) };
 
     return {
       end: {
-        x: start.x + object.pixelVector.x,
-        y: start.y + object.pixelVector.y
+        x: start.x + direction.x * lengthPx,
+        y: start.y + direction.y * lengthPx
       },
       id: object.id,
+      metResPerPixel: converter.metresPerPixel(anchor),
+      properties: { control: object.properties.control },
       start,
+      strokeWidth: Math.max(MIN_CROSSING_WIDTH_PX, converter.metresToPixels(widthMetres, anchor)),
       type: "crossing"
+    };
+  }
+
+  const points = object.geometry.points;
+  const midAnchor = points[Math.floor(points.length / 2)] ?? points[0];
+  const widthPx = Math.max(
+    object.type === "road" ? MIN_ROAD_WIDTH_PX : MIN_PATH_WIDTH_PX,
+    converter.metresToPixels(getLineObjectWidthMetres(object), midAnchor)
+  );
+
+  if (object.type === "road") {
+    return {
+      id: object.id,
+      metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+      points: getProjectedPoints(points, projectMapPoint),
+      properties: { ...object.properties },
+      strokeWidth: widthPx,
+      type: "road"
+    };
+  }
+
+  if (object.type === "cycleway") {
+    return {
+      id: object.id,
+      metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+      points: getProjectedPoints(points, projectMapPoint),
+      properties: { ...object.properties },
+      strokeWidth: widthPx,
+      type: "bike"
     };
   }
 
   return {
     id: object.id,
-    points: object.path.flatMap((point) => {
-      const projected = projectMapPoint(point);
-
-      return [projected.x, projected.y];
-    }),
-    snapped: object.snapped,
-    type: object.type
+    metResPerPixel: midAnchor ? converter.metresPerPixel(midAnchor) : undefined,
+    points: getProjectedPoints(points, projectMapPoint),
+    properties: { ...object.properties },
+    strokeWidth: widthPx,
+    type: "sidewalk"
   };
+}
+
+function getProjectedPoints(points: MapPoint[], projectMapPoint: (point: MapPoint) => Point): number[] {
+  return points.flatMap((point) => {
+    const projected = projectMapPoint(point);
+
+    return [projected.x, projected.y];
+  });
 }
 
 function getDraftObject(tool: Tool, start: Point, end: Point): RenderedDrawingObject {
@@ -1550,20 +2333,6 @@ function getDraftObject(tool: Tool, start: Point, end: Point): RenderedDrawingOb
   };
 }
 
-function getSegmentMetrics(start: Point, end: Point) {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-
-  return {
-    angle: (Math.atan2(dy, dx) * 180) / Math.PI,
-    length: Math.max(26, Math.sqrt(dx * dx + dy * dy)),
-    midpoint: {
-      x: (start.x + end.x) / 2,
-      y: (start.y + end.y) / 2
-    }
-  };
-}
-
 function getMidpoint(start: Point, end: Point): Point {
   return {
     x: (start.x + end.x) / 2,
@@ -1576,6 +2345,17 @@ function getVector(start: Point, end: Point): Point {
     x: end.x - start.x,
     y: end.y - start.y
   };
+}
+
+/** Approximate real-world length of a map polyline, in metres. */
+function getPolylineLengthMetres(points: MapPoint[]): number {
+  let total = 0;
+
+  for (let index = 1; index < points.length; index += 1) {
+    total += getMapDistanceMeters(points[index - 1], points[index]);
+  }
+
+  return total;
 }
 
 function createId(type: DrawingObject["type"]) {

@@ -1,6 +1,6 @@
-import type { DrawingObject } from "./satellite-overlay";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
 
-const maxHistoryEntries = 50;
+const maxHistoryEntries = 500;
 
 /**
  * Snapshot-based drawing history. Every mutation (add or erase) records the
@@ -10,32 +10,39 @@ const maxHistoryEntries = 50;
  * corrupt it, and simple enough to test exhaustively.
  */
 export type HistoryState = {
-  future: DrawingObject[][];
-  past: DrawingObject[][];
-  present: DrawingObject[];
+  future: DrawingObjectV1[][];
+  historyTruncated: boolean;
+  past: DrawingObjectV1[][];
+  present: DrawingObjectV1[];
 };
 
 export type HistoryAction =
-  | { object: DrawingObject; type: "add" }
+  | { object: DrawingObjectV1; type: "add" }
   | { id: string; type: "remove" }
+  | { id: string; properties: Record<string, unknown>; type: "update" }
+  | { id: string; object: DrawingObjectV1; type: "update-object" }
   | { type: "undo" }
   | { type: "redo" }
-  | { objects: DrawingObject[]; type: "replace-all" };
+  | { objects: DrawingObjectV1[]; type: "replace-all" };
 
 export const emptyHistoryState: HistoryState = {
   future: [],
+  historyTruncated: false,
   past: [],
   present: []
 };
 
 export function historyReducer(state: HistoryState, action: HistoryAction): HistoryState {
   switch (action.type) {
-    case "add":
+    case "add": {
+      const history = pushPast(state.past, state.present);
       return {
         future: [],
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: [...state.present, action.object]
       };
+    }
 
     case "remove": {
       const next = state.present.filter((object) => object.id !== action.id);
@@ -45,9 +52,64 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
         return state;
       }
 
+      const history = pushPast(state.past, state.present);
       return {
         future: [],
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
+        present: next
+      };
+    }
+
+    case "update": {
+      // Property edits keep the object's identity (same id, same geometry);
+      // the object is replaced immutably so past snapshots stay intact for undo.
+      let updated = false;
+      const next = state.present.map((object) => {
+        if (object.id !== action.id) {
+          return object;
+        }
+
+        updated = true;
+        return { ...object, properties: { ...object.properties, ...action.properties } } as DrawingObjectV1;
+      });
+
+      if (!updated) {
+        return state;
+      }
+
+      const history = pushPast(state.past, state.present);
+      return {
+        future: [],
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
+        present: next
+      };
+    }
+
+    case "update-object": {
+      // Whole-object replacement (geometry edits): same id, new geometry or
+      // shape; replaced immutably so past snapshots stay intact for undo.
+      let updated = false;
+      const next = state.present.map((object) => {
+        if (object.id !== action.id) {
+          return object;
+        }
+
+        updated = true;
+
+        return { ...action.object, id: action.id } as DrawingObjectV1;
+      });
+
+      if (!updated) {
+        return state;
+      }
+
+      const history = pushPast(state.past, state.present);
+      return {
+        future: [],
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: next
       };
     }
@@ -60,7 +122,8 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
       }
 
       return {
-        future: [state.present, ...state.future].slice(0, maxHistoryEntries),
+        future: [state.present, ...state.future],
+        historyTruncated: state.historyTruncated,
         past: state.past.slice(0, -1),
         present: previous
       };
@@ -73,9 +136,11 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
         return state;
       }
 
+      const history = pushPast(state.past, state.present);
       return {
         future: state.future.slice(1),
-        past: pushPast(state.past, state.present),
+        historyTruncated: state.historyTruncated || history.truncated,
+        past: history.past,
         present: next
       };
     }
@@ -83,6 +148,7 @@ export function historyReducer(state: HistoryState, action: HistoryAction): Hist
     case "replace-all":
       return {
         future: [],
+        historyTruncated: false,
         past: [],
         present: action.objects
       };
@@ -100,6 +166,10 @@ export function canUndo(state: HistoryState) {
   return state.past.length > 0;
 }
 
-function pushPast(past: DrawingObject[][], present: DrawingObject[]) {
-  return [...past, present].slice(-maxHistoryEntries);
+function pushPast(past: DrawingObjectV1[][], present: DrawingObjectV1[]) {
+  const next = [...past, present];
+  return {
+    past: next.slice(-maxHistoryEntries),
+    truncated: next.length > maxHistoryEntries
+  };
 }

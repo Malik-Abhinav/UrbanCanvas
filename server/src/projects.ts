@@ -16,9 +16,14 @@ type ProjectStateRow = ProjectRow & {
   user_edits: unknown;
 };
 
+type ProjectOwnershipRow = {
+  name: string;
+  user_id: string;
+};
+
 const maxProjectNameLength = 80;
-const maxUserEdits = 500;
 const maxProjectAreaKm2 = 5;
+const maxProjectStateBytes = 6 * 1024 * 1024;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function listProjects(userId: string) {
@@ -65,31 +70,54 @@ export async function saveProject(input: unknown, userId: string) {
 
   const project = parseProjectInput(input);
   const id = project.id ?? randomUUID();
+  const osmDataJson = JSON.stringify(project.osmData);
+  const userEditsJson = JSON.stringify(project.userEdits);
+
+  if (Buffer.byteLength(osmDataJson) + Buffer.byteLength(userEditsJson) > maxProjectStateBytes) {
+    throw new Error("Project map data and drawing edits must be 6 MB or smaller.");
+  }
 
   await pool!.query("begin");
 
   try {
-    if (project.id) {
-      const update = await pool!.query(
-        `
-          update projects
-          set name = $3, bbox = $4, updated_at = now()
-          where id = $1 and user_id = $2
-        `,
-        [id, userId, project.name, JSON.stringify(project.bbox)]
-      );
+    const existing = await pool!.query<ProjectOwnershipRow>(
+      `
+        select user_id, name
+        from projects
+        where id = $1
+        for update
+      `,
+      [id]
+    );
+    const existingProject = existing.rows[0];
 
-      if (update.rowCount === 0) {
-        throw new Error("Project not found.");
-      }
-    } else {
-      await pool!.query(
-        `
-          insert into projects (id, user_id, name, bbox)
-          values ($1, $2, $3, $4)
-        `,
-        [id, userId, project.name, JSON.stringify(project.bbox)]
-      );
+    if (existingProject && existingProject.user_id !== userId) {
+      throw new Error("Project not found.");
+    }
+
+    if (
+      project.name.length > maxProjectNameLength &&
+      (!existingProject || existingProject.name !== project.name)
+    ) {
+      throw new Error(`Project name must be ${maxProjectNameLength} characters or fewer.`);
+    }
+
+    const upsert = await pool!.query<{ id: string }>(
+      `
+        insert into projects (id, user_id, name, bbox)
+        values ($1, $2, $3, $4)
+        on conflict (id) do update set
+          name = excluded.name,
+          bbox = excluded.bbox,
+          updated_at = now()
+        where projects.user_id = excluded.user_id
+        returning id
+      `,
+      [id, userId, project.name, JSON.stringify(project.bbox)]
+    );
+
+    if (upsert.rowCount === 0) {
+      throw new Error("Project not found.");
     }
 
     await pool!.query(
@@ -100,7 +128,7 @@ export async function saveProject(input: unknown, userId: string) {
           osm_data = excluded.osm_data,
           user_edits = excluded.user_edits
       `,
-      [id, JSON.stringify(project.osmData), JSON.stringify(project.userEdits)]
+      [id, osmDataJson, userEditsJson]
     );
 
     await pool!.query("commit");
@@ -179,12 +207,13 @@ function parseProjectInput(input: unknown) {
 
   const body = input as Record<string, unknown>;
   const name = typeof body.name === "string" ? body.name.trim() : "";
+  const id = parseProjectId(body.id);
 
   if (!name) {
     throw new Error("Project name is required.");
   }
 
-  if (name.length > maxProjectNameLength) {
+  if (!id && name.length > maxProjectNameLength) {
     throw new Error(`Project name must be ${maxProjectNameLength} characters or fewer.`);
   }
 
@@ -194,17 +223,13 @@ function parseProjectInput(input: unknown) {
     throw new Error("Project osmData is required.");
   }
 
-  if (!Array.isArray(body.userEdits)) {
-    throw new Error("Project userEdits must be an array.");
-  }
-
-  if (body.userEdits.length > maxUserEdits) {
-    throw new Error(`Projects are limited to ${maxUserEdits} drawing edits.`);
+  if (!isUserEditsPayload(body.userEdits)) {
+    throw new Error("Project userEdits must be an array or a schemaVersion 1 drawing document.");
   }
 
   return {
     bbox: body.bbox as BoundingBox,
-    id: parseProjectId(body.id),
+    id,
     name,
     osmData: body.osmData,
     userEdits: body.userEdits
@@ -239,6 +264,23 @@ function validateProjectBoundingBox(bbox: unknown): asserts bbox is BoundingBox 
   if (getApproximateAreaKm2(bbox) > maxProjectAreaKm2) {
     throw new Error(`Selected area exceeds the ${maxProjectAreaKm2} km2 limit.`);
   }
+}
+
+// A project's userEdits payload is either a stored legacy drawing array or a
+// schemaVersion 1 drawing document. The contents are stored verbatim; the
+// client owns parsing and migration.
+function isUserEditsPayload(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return true;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return record.schemaVersion === 1 && Array.isArray(record.objects);
 }
 
 function assertProjectId(id: string) {

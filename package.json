@@ -11,10 +11,17 @@
     "build:api": "tsc -p server/tsconfig.json",
     "start": "concurrently \"npm run start:web\" \"npm run start:api\"",
     "start:web": "next start -p 3000",
-    "start:api": "node server/dist/index.js",
+    "start:api": "node server/dist/server/src/index.js",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install --with-deps chromium",
+    "test:e2e:production-bundle": "node scripts/verify-e2e-production-bundle.mjs",
+    "test:e2e:production-safety": "node scripts/verify-e2e-production-safety.mjs",
     "typecheck": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   },
   "dependencies": {
     "@clerk/express": "^2.1.41",
@@ -28,7 +35,7 @@
     "konva": "^10.3.0",
     "lucide-react": "^1.23.0",
     "mapbox-gl": "^3.25.0",
-    "next": "^15.1.6",
+    "next": "15.5.21",
     "pg": "^8.13.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -36,6 +43,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.5",
+    "@playwright/test": "^1.62.1",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
@@ -51,5 +59,12 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "body-parser": "1.20.6",
+    "next": {
+      "postcss": "8.5.23",
+      "sharp": "0.35.0"
+    }
   }
 }

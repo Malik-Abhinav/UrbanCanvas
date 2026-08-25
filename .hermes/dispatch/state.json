@@ -1,0 +1,84 @@
+{
+  "plan": ".hermes/plans/2026-08-24_190234-urban-canvas-stabilization-redesign-core-functionality.md",
+  "base_branch": "hermes/dev-stabilization",
+  "branch_prefix": "hermes/stabilization-08-",
+  "completed_batches": [
+    "01-test-foundation",
+    "02-workflow-regressions",
+    "03-persistence-correctness",
+    "04-osm-resilience",
+    "05-drawing-domain",
+    "06-dependency-security",
+    "07-canvas-integration"
+  ],
+  "queue": [
+    {
+      "id": "22-pedestrian-analysis",
+      "plan_task": 22,
+      "title": "Improve pedestrian and accessibility analysis"
+    },
+    {
+      "id": "23-cycling-feedback",
+      "plan_task": 23,
+      "title": "Improve cycling and road-design feedback"
+    },
+    {
+      "id": "24-explainable-analysis",
+      "plan_task": 24,
+      "title": "Present explainable analysis on the map"
+    },
+    {
+      "id": "25-workspace-prototypes",
+      "plan_task": 25,
+      "title": "Produce three high-fidelity workspace prototypes"
+    },
+    {
+      "id": "26-design-system",
+      "plan_task": 26,
+      "title": "Define the production design system"
+    },
+    {
+      "id": "27-decompose-workspace",
+      "plan_task": 27,
+      "title": "Decompose the monolithic workspace"
+    },
+    {
+      "id": "28-responsive-modes",
+      "plan_task": 28,
+      "title": "Implement responsive workspace modes"
+    },
+    {
+      "id": "29-ui-states",
+      "plan_task": 29,
+      "title": "Add disciplined loading, empty, error, and success states"
+    },
+    {
+      "id": "30-render-layers",
+      "plan_task": 30,
+      "title": "Profile and isolate render layers"
+    },
+    {
+      "id": "31-accessibility",
+      "plan_task": 31,
+      "title": "Complete accessibility verification"
+    },
+    {
+      "id": "32-visual-regression",
+      "plan_task": 32,
+      "title": "Add visual regression coverage"
+    }
+  ],
+  "done": [
+    "14-scale-aware-styling",
+    "15-layer-semantics",
+    "16-map-derived-rendering",
+    "17-selection-inspection",
+    "18-vertex-editing",
+    "19-snapping-continuity",
+    "20-precision-tools",
+    "21-combined-graph"
+  ],
+  "failed": [],
+  "in_flight": null,
+  "updated_at": "2026-08-24T22:55:00+05:30"
+}

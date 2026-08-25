@@ -1,21 +1,45 @@
 "use client";
 
-import { Show, SignInButton, SignUpButton, UserButton, useAuth } from "@clerk/nextjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, PointerEvent } from "react";
 import mapboxgl, { Marker } from "mapbox-gl";
 import type { GeoJSONSource, LngLatLike, Map } from "mapbox-gl";
 import { PanelLeftClose, PanelLeftOpen, Trash2 } from "lucide-react";
 import type { OsmData, OsmFeature } from "./canvas-renderer";
+import { createE2eFixtureMap } from "./e2e-fixture-map";
 import { apiFetch } from "./api-fetch";
+import { normalizeSavedProject } from "./project-normalization";
+import { getRetryAfterMilliseconds } from "./retry-after";
 import SatelliteOverlay from "./satellite-overlay";
-import type { DrawingObject } from "./satellite-overlay";
+import ObjectInspector from "./components/workspace/object-inspector";
+import LayersPanel from "./components/workspace/layers-panel";
+import {
+  createLayerSettings,
+  setContextOpacity,
+  setProposalOpacity,
+  toggleLayer,
+  type LayerSettings
+} from "./layer-semantics";
+import {
+  createMigrationPixelsToMetres,
+  createPixelMetreConverter,
+  hashDrawingObjects,
+  parseStoredUserEdits,
+  toLegacyAnalysisEdits,
+  toUserEditsPayload
+} from "./drawing-document-bridge";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
+import { useWorkspaceAuth, WorkspaceAuthControls } from "./workspace-auth";
 
 const mapboxToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const fixturesEnabled =
+  process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_E2E_TEST_FIXTURES === "1";
 const delhiCenter: [number, number] = [77.209, 28.6139];
 const maxSelectionAreaKm2 = 5;
+const projectNameEditingLimit = 80;
 const autoSaveDelayMs = 120_000;
+const osmRequestTimeoutMs = 65_000;
 const selectionSourceId = "selected-area";
 const selectionFillLayerId = "selected-area-fill";
 const selectionLineLayerId = "selected-area-line";
@@ -76,11 +100,6 @@ type ProjectSummary = {
   updated_at: string;
 };
 
-type ProjectDetail = ProjectSummary & {
-  osm_data: OsmData;
-  user_edits: DrawingObject[];
-};
-
 type ProjectsResponse = {
   status: "ok" | "error";
   message?: string;
@@ -90,7 +109,7 @@ type ProjectsResponse = {
 type ProjectResponse = {
   status: "ok" | "error";
   message?: string;
-  project?: ProjectDetail;
+  project?: unknown;
 };
 
 type ChangeAnalysis = {
@@ -109,13 +128,17 @@ type AnalysisResponse = {
 };
 
 export default function MapSearch() {
-  const { getToken, isSignedIn } = useAuth();
+  const { getToken, isSignedIn } = useWorkspaceAuth();
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const markerRef = useRef<Marker | null>(null);
   const dragStartRef = useRef<ScreenPoint | null>(null);
   const moveFrameRef = useRef<number | null>(null);
   const lastSavedSignatureRef = useRef<string | null>(null);
+  const pendingProjectIdRef = useRef<string | null>(null);
+  // The overlay owns selection + property commits; these mirror them into the sidebar.
+  const [inspectedObject, setInspectedObject] = useState<DrawingObjectV1 | null>(null);
+  const propertyUpdateRef = useRef<((key: string, value: string) => void) | null>(null);
   const [query, setQuery] = useState("Delhi");
   const [results, setResults] = useState<SearchResult[]>([]);
   const [selectedPlace, setSelectedPlace] = useState("Delhi, India");
@@ -129,6 +152,8 @@ export default function MapSearch() {
   const [osmData, setOsmData] = useState<OsmData | null>(null);
   const [isFetchingOsm, setIsFetchingOsm] = useState(false);
   const [osmError, setOsmError] = useState<string | null>(null);
+  const [osmRetryAvailableAt, setOsmRetryAvailableAt] = useState<number | null>(null);
+  const [osmRetrySeconds, setOsmRetrySeconds] = useState(0);
   const [isAreaConfirmed, setIsAreaConfirmed] = useState(false);
   const [overlayBox, setOverlayBox] = useState<OverlayBox | null>(null);
   const [mapRevision, setMapRevision] = useState(0);
@@ -136,8 +161,8 @@ export default function MapSearch() {
   const [mapError, setMapError] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("Untitled project");
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  const [projectObjects, setProjectObjects] = useState<DrawingObject[]>([]);
-  const [loadedProjectObjects, setLoadedProjectObjects] = useState<DrawingObject[]>([]);
+  const [projectObjects, setProjectObjects] = useState<DrawingObjectV1[]>([]);
+  const [loadedProjectObjects, setLoadedProjectObjects] = useState<DrawingObjectV1[]>([]);
   const [projectObjectsRevision, setProjectObjectsRevision] = useState(0);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [isSavingProject, setIsSavingProject] = useState(false);
@@ -147,12 +172,13 @@ export default function MapSearch() {
   const [isAnalyzingChanges, setIsAnalyzingChanges] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState<string | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [layerSettings, setLayerSettings] = useState<LayerSettings>(createLayerSettings);
   const [error, setError] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
   const [lastAutoSaveFailed, setLastAutoSaveFailed] = useState(false);
 
-  const handleObjectsChange = useCallback((objects: DrawingObject[]) => {
+  const handleObjectsChange = useCallback((objects: DrawingObjectV1[]) => {
     setProjectObjects(objects);
   }, []);
 
@@ -162,6 +188,31 @@ export default function MapSearch() {
       setMapRevision((current) => current + 1);
     }, 260);
   }, [isSidebarCollapsed]);
+
+  // Satellite toggle fades the Mapbox raster; the canvas overlay stays crisp
+  // so proposals remain readable even with imagery hidden.
+  useEffect(() => {
+    const container = mapContainerRef.current;
+
+    if (container) {
+      container.style.opacity = layerSettings.visible.satellite ? "1" : "0.12";
+    }
+  }, [isAreaConfirmed, layerSettings.visible.satellite]);
+
+  useEffect(() => {
+    if (osmRetryAvailableAt === null) {
+      setOsmRetrySeconds(0);
+      return;
+    }
+
+    const updateCountdown = () => {
+      setOsmRetrySeconds(Math.max(0, Math.ceil((osmRetryAvailableAt - Date.now()) / 1_000)));
+    };
+    updateCountdown();
+    const intervalId = window.setInterval(updateCountdown, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [osmRetryAvailableAt]);
 
   const getProjectRequestHeaders = useCallback(async () => {
     const token = await getToken();
@@ -176,8 +227,44 @@ export default function MapSearch() {
     };
   }, [getToken]);
 
+  // Coalesce revision bumps to one per animation frame: "move" fires far more
+  // often than frames render, and every bump re-renders the workspace.
+  const attachMoveRevisionHandler = useCallback((map: Map) => {
+    map.on("move", () => {
+      if (moveFrameRef.current !== null) {
+        return;
+      }
+
+      moveFrameRef.current = window.requestAnimationFrame(() => {
+        moveFrameRef.current = null;
+        setMapRevision((current) => current + 1);
+      });
+    });
+  }, []);
+
   useEffect(() => {
-    if (!mapContainerRef.current || !mapboxToken || mapRef.current) {
+    if (!mapContainerRef.current || mapRef.current) {
+      return;
+    }
+
+    if (fixturesEnabled) {
+      const map = createE2eFixtureMap(mapContainerRef.current);
+      mapRef.current = map;
+      attachMoveRevisionHandler(map);
+      map.on("load", () => {
+        setMapError(null);
+        setIsMapLoaded(true);
+        ensureSelectionLayer(map);
+      });
+
+      return () => {
+        map.remove();
+        mapRef.current = null;
+        setIsMapLoaded(false);
+      };
+    }
+
+    if (!mapboxToken) {
       return;
     }
 
@@ -206,31 +293,26 @@ export default function MapSearch() {
       ensureSelectionLayer(map);
     });
     map.on("idle", () => {
-      setMapError(null);
-      setIsMapLoaded(true);
-    });
-    map.on("styledata", () => {
       if (map.isStyleLoaded()) {
         setMapError(null);
         setIsMapLoaded(true);
       }
     });
+    map.on("styledata", () => {
+      const isStyleReady = map.isStyleLoaded();
+      setIsMapLoaded(isStyleReady);
+      if (isStyleReady) {
+        setMapError(null);
+      }
+    });
     map.on("error", (event) => {
       const message = event.error?.message ?? "Mapbox failed to load satellite imagery.";
+      setIsMapLoaded(false);
       setMapError(message);
     });
     // Coalesce revision bumps to one per animation frame: "move" fires far
     // more often than frames render, and every bump re-renders the workspace.
-    map.on("move", () => {
-      if (moveFrameRef.current !== null) {
-        return;
-      }
-
-      moveFrameRef.current = window.requestAnimationFrame(() => {
-        moveFrameRef.current = null;
-        setMapRevision((current) => current + 1);
-      });
-    });
+    attachMoveRevisionHandler(map);
 
     const resizeObserver = new ResizeObserver(() => {
       map.resize();
@@ -259,7 +341,7 @@ export default function MapSearch() {
       markerRef.current = null;
       setIsMapLoaded(false);
     };
-  }, []);
+  }, [attachMoveRevisionHandler]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -360,6 +442,10 @@ export default function MapSearch() {
   }
 
   function toggleAreaSelection() {
+    if (!isMapLoaded || !mapRef.current?.isStyleLoaded()) {
+      return;
+    }
+
     setIsSelectingArea((current) => !current);
     setSelectionError(null);
     setSelectionBox(null);
@@ -373,10 +459,12 @@ export default function MapSearch() {
     setSelectionError(null);
     setOsmData(null);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
+    pendingProjectIdRef.current = null;
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
@@ -451,10 +539,12 @@ export default function MapSearch() {
     setSelectionAreaKm2(areaKm2);
     setOsmData(null);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
     setIsAreaConfirmed(false);
     setOverlayBox(null);
     setLastAutoSaveFailed(false);
     setCurrentProjectId(null);
+    pendingProjectIdRef.current = null;
     setProjectObjects([]);
     setLoadedProjectObjects([]);
     setProjectObjectsRevision((current) => current + 1);
@@ -504,6 +594,7 @@ export default function MapSearch() {
   async function fetchSelectedAreaData(bounds: BoundingBox) {
     setIsFetchingOsm(true);
     setOsmError(null);
+    setOsmRetryAvailableAt(null);
 
     try {
       const response = await apiFetch(`${apiUrl}/api/osm`, {
@@ -513,11 +604,15 @@ export default function MapSearch() {
         },
         body: JSON.stringify({
           bbox: bounds
-        })
+        }),
+        timeoutMs: osmRequestTimeoutMs
       });
       const payload = await readApiJson<OsmResponse>(response);
 
       if (!response.ok || payload.status !== "ok" || !payload.data) {
+        if (response.status === 429) {
+          setOsmRetryAvailableAt(Date.now() + getRetryAfterMilliseconds(response.headers.get("retry-after")));
+        }
         throw new Error(payload.message ?? "Unable to fetch map data.");
       }
 
@@ -526,6 +621,7 @@ export default function MapSearch() {
       }
 
       setOsmData(payload.data);
+      setOsmRetryAvailableAt(null);
       if (payload.data.counts.roads === 0) {
         setOsmError("No OSM roads were found in this selection. You can still draw, but snapping and graph analysis will be limited.");
       }
@@ -580,6 +676,7 @@ export default function MapSearch() {
 
     const signature = getProjectSaveSignature({
       bbox: selectedBounds,
+      contentHash: hashDrawingObjects(projectObjects),
       name: projectName,
       osmDataId: getOsmDataId(osmData),
       userEdits: projectObjects
@@ -594,26 +691,34 @@ export default function MapSearch() {
       setProjectMessage(null);
     }
 
+    const projectId = currentProjectId ?? pendingProjectIdRef.current ?? window.crypto.randomUUID();
+    if (!currentProjectId) {
+      pendingProjectIdRef.current = projectId;
+    }
+
     try {
       const response = await apiFetch(`${apiUrl}/api/projects`, {
         method: "POST",
         headers: await getProjectRequestHeaders(),
         body: JSON.stringify({
           bbox: selectedBounds,
-          id: currentProjectId,
+          id: projectId,
           name: projectName,
           osmData,
-          userEdits: projectObjects
+          userEdits: toUserEditsPayload(projectObjects)
         })
       });
       const payload = await readApiJson<ProjectResponse>(response);
 
-      if (!response.ok || payload.status !== "ok" || !payload.project) {
+      const normalized = normalizeSavedProject(payload.project);
+
+      if (!response.ok || payload.status !== "ok" || !normalized) {
         throw new Error(payload.message ?? "Unable to save project.");
       }
 
-      setCurrentProjectId(payload.project.id);
-      setProjectName(payload.project.name);
+      setCurrentProjectId(normalized.project.id);
+      pendingProjectIdRef.current = null;
+      setProjectName(normalized.project.name);
       lastSavedSignatureRef.current = signature;
 
       if (silent) {
@@ -662,7 +767,7 @@ export default function MapSearch() {
     async (id: string) => {
       setProjectDeleteError(null);
 
-      if (!window.confirm("Delete this saved project? This cannot be undone.")) {
+      if (!window.confirm("Delete this saved project? Your current canvas will stay open as an unsaved project.")) {
         return;
       }
 
@@ -680,11 +785,18 @@ export default function MapSearch() {
         }
 
         if (currentProjectId === id) {
-          clearSelection();
+          setCurrentProjectId(null);
+          pendingProjectIdRef.current = null;
+          lastSavedSignatureRef.current = null;
+          setLastAutoSaveFailed(false);
         }
 
         setProjects((current) => current.filter((project) => project.id !== id));
-        setProjectMessage("Project deleted.");
+        setProjectMessage(
+          currentProjectId === id
+            ? "Saved project deleted. Your canvas remains open as an unsaved project."
+            : "Project deleted."
+        );
       } catch (deleteError) {
         setProjectDeleteError(deleteError instanceof Error ? deleteError.message : "Unable to delete project.");
       } finally {
@@ -713,32 +825,44 @@ export default function MapSearch() {
         throw new Error(payload.message ?? "Unable to load project.");
       }
 
-      const project = payload.project;
-
-      if (!isProjectDetail(project)) {
+      const normalized = normalizeSavedProject(payload.project);
+      if (!normalized) {
         throw new Error("Saved project data is incomplete or corrupted.");
       }
+      const { project, skippedDrawingCount } = normalized;
+      // Stored payloads may be legacy arrays or versioned documents; both are
+      // parsed into V1 objects here, with legacy pixel measurements converted
+      // through the live map projection.
+      const parsedEdits = parseStoredUserEdits(project.user_edits, {
+        pixelsToMetres: createMigrationPixelsToMetres(
+          createPixelMetreConverter({ getZoom: () => map.getZoom() })
+        )
+      });
+      const skippedCount = skippedDrawingCount + parsedEdits.skippedCount;
 
       setCurrentProjectId(project.id);
+      pendingProjectIdRef.current = null;
       setProjectName(project.name);
       setSelectedBounds(project.bbox);
       setSelectionAreaKm2(getApproximateAreaKm2(project.bbox));
       setOsmData(project.osm_data);
       setOsmError(null);
+      setOsmRetryAvailableAt(null);
       setIsSelectingArea(false);
       setIsAreaConfirmed(true);
       setOverlayBox(null);
-      setProjectObjects(project.user_edits);
-      setLoadedProjectObjects(project.user_edits);
+      setProjectObjects(parsedEdits.objects);
+      setLoadedProjectObjects(parsedEdits.objects);
       setProjectObjectsRevision((current) => current + 1);
       setChangeAnalysis(null);
       setAnalysisMessage(null);
       setLastAutoSaveFailed(false);
       lastSavedSignatureRef.current = getProjectSaveSignature({
         bbox: project.bbox,
+        contentHash: hashDrawingObjects(parsedEdits.objects),
         name: project.name,
         osmDataId: getOsmDataId(project.osm_data),
-        userEdits: project.user_edits
+        userEdits: parsedEdits.objects
       });
       disableMapInteractions(map);
       syncSelectionLayer(map, null);
@@ -758,7 +882,11 @@ export default function MapSearch() {
         disableMapInteractions(map);
         setOverlayBox(getOverlayBoxFromBounds(map, project.bbox));
       });
-      setProjectMessage("Project loaded.");
+      setProjectMessage(
+        skippedCount > 0
+          ? `Project loaded with ${skippedCount} invalid drawing${skippedCount === 1 ? "" : "s"} skipped.`
+          : "Project loaded."
+      );
     } catch (loadError) {
       setProjectMessage(loadError instanceof Error ? loadError.message : "Unable to load project.");
     }
@@ -781,7 +909,7 @@ export default function MapSearch() {
           bbox: selectedBounds,
           osmData,
           projectName,
-          userEdits: projectObjects
+          userEdits: toLegacyAnalysisEdits(projectObjects)
         })
       });
       const payload = await readApiJson<AnalysisResponse>(response);
@@ -930,27 +1058,7 @@ export default function MapSearch() {
               <h1 className="mt-2 text-3xl font-semibold leading-tight tracking-normal">Map workspace</h1>
             </div>
             <div className="flex items-center gap-2">
-              <Show when="signed-out">
-                <SignInButton mode="modal">
-                  <button
-                    className={`secondary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
-                    type="button"
-                  >
-                    Sign in
-                  </button>
-                </SignInButton>
-                <SignUpButton mode="modal">
-                  <button
-                    className={`primary-button px-2.5 py-1 text-xs ${isSidebarCollapsed ? "hidden" : ""}`}
-                    type="button"
-                  >
-                    Sign up
-                  </button>
-                </SignUpButton>
-              </Show>
-              <Show when="signed-in">
-                <UserButton />
-              </Show>
+              <WorkspaceAuthControls collapsed={isSidebarCollapsed} />
               <button
                 aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
                 className="icon-button"
@@ -968,6 +1076,28 @@ export default function MapSearch() {
           </div>
 
           <div className={isSidebarCollapsed ? "hidden" : "block"}>
+          {isAreaConfirmed ? (
+            <div className="mt-6">
+              <LayersPanel
+                onContextOpacityChange={(value) =>
+                  setLayerSettings((current) => setContextOpacity(current, value))
+                }
+                onLayerToggle={(id) => setLayerSettings((current) => toggleLayer(current, id))}
+                onProposalOpacityChange={(value) =>
+                  setLayerSettings((current) => setProposalOpacity(current, value))
+                }
+                settings={layerSettings}
+              />
+            </div>
+          ) : null}
+          {isAreaConfirmed ? (
+            <div className="mt-4">
+              <ObjectInspector
+                object={inspectedObject}
+                onPropertyChange={(key, value) => propertyUpdateRef.current?.(key, value)}
+              />
+            </div>
+          ) : null}
           <form className="mt-8" onSubmit={handleSearch}>
             <label className="text-sm font-medium text-white/75" htmlFor="location-search">
               Search location
@@ -1005,17 +1135,22 @@ export default function MapSearch() {
           <section className="mt-6 border-t border-white/10 pt-5">
             <div className="flex gap-2">
               <button
+                aria-describedby={!isMapLoaded ? "area-selection-readiness" : undefined}
                 aria-pressed={isSelectingArea}
                 className={`flex-1 rounded-lg px-4 py-2.5 text-sm font-semibold transition ${
                   isSelectingArea
                     ? "bg-[#63e6be] text-[#06110e] shadow-[0_14px_35px_rgba(99,230,190,0.18)] hover:bg-[#7ff2cf]"
                     : "border border-white/15 bg-white/[0.04] text-white hover:border-[#63e6be]/50 hover:bg-white/[0.08]"
                 }`}
+                disabled={!isMapLoaded}
                 onClick={toggleAreaSelection}
                 type="button"
               >
                 {isSelectingArea ? "Selecting..." : "Select Area"}
               </button>
+              <span className="sr-only" id="area-selection-readiness">
+                Wait for the satellite map to finish loading before selecting an area.
+              </span>
               <button
                 className="secondary-button px-4 py-2.5 text-sm"
                 disabled={!selectedBounds}
@@ -1058,9 +1193,23 @@ export default function MapSearch() {
             ) : null}
 
             {osmError ? (
-              <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
-                {osmError}
-              </p>
+              <div className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
+                <p>{osmError}</p>
+                {!osmData && isAreaConfirmed && selectedBounds ? (
+                  <button
+                    className="secondary-button mt-2 px-3 py-1.5 text-xs"
+                    disabled={isFetchingOsm || osmRetrySeconds > 0}
+                    onClick={() => void fetchSelectedAreaData(selectedBounds)}
+                    type="button"
+                  >
+                    {isFetchingOsm
+                      ? "Retrying OSM..."
+                      : osmRetrySeconds > 0
+                        ? `Retry OSM in ${osmRetrySeconds}s`
+                        : "Retry OSM"}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
 
             {osmData ? (
@@ -1092,11 +1241,24 @@ export default function MapSearch() {
               Project name
             </label>
             <input
+              aria-describedby="project-name-count"
               className="field-input mt-2 w-full"
               id="project-name"
+              maxLength={Math.max(projectNameEditingLimit, projectName.length)}
               onChange={(event) => setProjectName(event.target.value)}
               value={projectName}
             />
+            <p
+              aria-live="polite"
+              className="mt-1 text-right text-xs leading-5 text-white/45"
+              id="project-name-count"
+              role="status"
+            >
+              {projectName.length} / {projectNameEditingLimit} characters
+              {projectName.length > projectNameEditingLimit
+                ? " — Legacy name preserved; shorten it to 80 characters to use the standard editing limit."
+                : ""}
+            </p>
             <button
               className="primary-button mt-3 w-full px-4 py-2.5 text-sm"
               disabled={isSavingProject || !isSignedIn || !isAreaConfirmed || !osmData}
@@ -1277,7 +1439,9 @@ export default function MapSearch() {
 
           {isAreaConfirmed && overlayBox ? (
             <div
+              aria-label="Drawing canvas overlay"
               className="absolute overflow-hidden"
+              role="region"
               style={{
                 height: overlayBox.height,
                 left: overlayBox.left,
@@ -1286,8 +1450,14 @@ export default function MapSearch() {
               }}
             >
               <SatelliteOverlay
+                getMapZoom={() => mapRef.current?.getZoom() ?? 12}
                 height={overlayBox.height}
                 initialObjects={loadedProjectObjects}
+                layerSettings={layerSettings}
+                onBindPropertyUpdate={(update) => {
+                  propertyUpdateRef.current = update;
+                }}
+                onSelectionChange={setInspectedObject}
                 mapRevision={mapRevision}
                 objectsRevision={projectObjectsRevision}
                 onObjectsChange={handleObjectsChange}
@@ -1308,7 +1478,7 @@ export default function MapSearch() {
             </div>
           ) : null}
 
-          {!mapboxToken && !isAreaConfirmed ? (
+          {!mapboxToken && !fixturesEnabled && !isAreaConfirmed ? (
             <div className="absolute inset-0 flex items-center justify-center p-6">
               <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
                 <h2 className="text-xl font-semibold">Mapbox token needed</h2>
@@ -1353,49 +1523,6 @@ function isOsmData(value: unknown): value is OsmData {
   );
 }
 
-function isProjectDetail(value: unknown): value is ProjectDetail {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const project = value as Partial<ProjectDetail>;
-
-  return (
-    typeof project.id === "string" &&
-    typeof project.name === "string" &&
-    Boolean(project.bbox) &&
-    isBoundingBoxValue(project.bbox) &&
-    isOsmData(project.osm_data) &&
-    Array.isArray(project.user_edits) &&
-    project.user_edits.every(isDrawingObjectValue)
-  );
-}
-
-function isBoundingBoxValue(value: unknown): value is BoundingBox {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const bbox = value as Partial<BoundingBox>;
-
-  return (
-    typeof bbox.north === "number" &&
-    typeof bbox.south === "number" &&
-    typeof bbox.east === "number" &&
-    typeof bbox.west === "number"
-  );
-}
-
-function isDrawingObjectValue(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const object = value as { id?: unknown; type?: unknown };
-
-  return typeof object.id === "string" && typeof object.type === "string";
-}
-
 function isFeatureArray(value: unknown): value is OsmFeature[] {
   return (
     Array.isArray(value) &&
@@ -1426,7 +1553,10 @@ function Coordinate({ label, value }: { label: string; value: number }) {
 
 function Count({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded border border-white/10 bg-white/[0.04] px-2 py-2">
+    <div
+      aria-label={`${label}: ${value}`}
+      className="rounded border border-white/10 bg-white/[0.04] px-2 py-2"
+    >
       <p className="text-[11px] text-white/45">{label}</p>
       <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
@@ -1466,17 +1596,21 @@ function formatProjectDate(value: string) {
 
 function getProjectSaveSignature({
   bbox,
+  contentHash,
   name,
   osmDataId,
   userEdits
 }: {
   bbox: BoundingBox;
+  contentHash: string;
   name: string;
   osmDataId: string;
-  userEdits: DrawingObject[];
+  userEdits: DrawingObjectV1[];
 }) {
   // The OSM payload is immutable once fetched for a selection, so its
   // identity (bbox + counts) stands in for hashing megabytes of geometry.
+  // The drawings contribute a content hash so property or geometry changes
+  // (not just adds/removes) trigger autosave.
   return [
     bbox.north,
     bbox.south,
@@ -1485,7 +1619,7 @@ function getProjectSaveSignature({
     name,
     osmDataId,
     userEdits.length,
-    userEdits.map((object) => object.id).join(",")
+    contentHash
   ].join("|");
 }
 

@@ -1,5 +1,15 @@
 import type { BoundingBox } from "./bbox.js";
 import { getApproximateAreaKm2, isBoundingBox } from "./bbox.js";
+import type {
+  MapPoint as NetworkMapPoint,
+  NetworkOsmRoad,
+  NetworkProposal
+} from "../../shared/network-analysis.js";
+import {
+  analyzeCombinedTransportNetwork,
+  buildCombinedNetworkGraphs
+} from "../../shared/network-analysis.js";
+import { analyzePedestrianAccessibility } from "../../shared/pedestrian-analysis.js";
 
 type MapPoint = {
   lat: number;
@@ -85,9 +95,80 @@ export function analyzeProjectChanges(input: unknown): ChangeAnalysis {
     provider: "rules",
     summary: getSummary(project.projectName, totalEdits, counts, roadCount),
     safetyObservations: getSafetyObservations(counts, roadCount),
-    pedestrianImpact: getPedestrianImpact(counts, roadCount),
+    pedestrianImpact: [
+      ...getPedestrianImpact(counts, roadCount),
+      ...getPedestrianNetworkFindings(project.osmData.roads, project.userEdits)
+    ],
     suggestions: getSuggestions(counts, roadCount, project.bbox)
   };
+}
+
+/**
+ * Runs the shared pedestrian/accessibility heuristics (Task 22) over the
+ * combined existing-plus-proposed network and turns findings into readable
+ * impact lines. Failures never break the analysis endpoint.
+ */
+function getPedestrianNetworkFindings(
+  roads: OsmFeature[],
+  userEdits: DrawingObject[]
+): string[] {
+  try {
+    const osmRoads: NetworkOsmRoad[] = roads.map((road) => ({
+      id: road.id,
+      kind: road.kind,
+      geometry: road.geometry as NetworkMapPoint[],
+      tags: road.tags
+    }));
+    const proposals: NetworkProposal[] = [];
+    for (const edit of userEdits) {
+      if ((edit.type === "road" || edit.type === "bike" || edit.type === "sidewalk") && Array.isArray(edit.path)) {
+        if (edit.path.length < 2) continue;
+        proposals.push({
+          id: edit.id,
+          kind: edit.type === "sidewalk" ? "footpath" : edit.type === "bike" ? "cycleway" : "road",
+          points: edit.path as NetworkMapPoint[]
+        });
+      } else if (edit.type === "crossing") {
+        proposals.push({ id: edit.id, point: edit.anchor as NetworkMapPoint });
+      }
+    }
+
+    const graphs = buildCombinedNetworkGraphs(osmRoads, proposals);
+    const pedestrian = analyzePedestrianAccessibility(graphs);
+    const findings: string[] = [];
+
+    if (pedestrian.gaps.length > 0) {
+      findings.push(
+        `Heuristic: ${pedestrian.gaps.length} sidewalk gap${pedestrian.gaps.length === 1 ? "" : "s"} detected in the walking network (${pedestrian.junctionDiscontinuities} near junctions).`
+      );
+    }
+
+    if (pedestrian.isolatedFootpaths.length > 0) {
+      findings.push(
+        `Heuristic: ${pedestrian.isolatedFootpaths.length} isolated footpath segment${pedestrian.isolatedFootpaths.length === 1 ? "" : "s"} do${pedestrian.isolatedFootpaths.length === 1 ? "es" : ""} not connect to the main walkable network.`
+      );
+    }
+
+    if (pedestrian.missingCurbConnections > 0) {
+      findings.push(
+        `Heuristic: ${pedestrian.missingCurbConnections} walkable dead-end${pedestrian.missingCurbConnections === 1 ? " lacks" : "s lack"} a curb or access connection to a road.`
+      );
+    }
+
+    if (pedestrian.excessiveCrossingDistances.length > 0) {
+      findings.push(
+        `Heuristic: ${pedestrian.excessiveCrossingDistances.length} long stretch${pedestrian.excessiveCrossingDistances.length === 1 ? "" : "es"} without footways or crossing opportunities; consider adding crossings.`
+      );
+    }
+
+    findings.push(
+      `Heuristic sidewalk coverage: ${pedestrian.sidewalk.coveragePercent}% of the modeled network length is walkable.`
+    );
+
+    return findings;
+  } catch {
+    return [];
+  }
 }
 
 function getAnalysisProvider() {
@@ -221,7 +302,7 @@ function describeCount(count: number, label: string) {
 }
 
 const maxProjectNameLength = 80;
-const maxUserEdits = 500;
+const maxAnalysisEdits = 10_000;
 
 function parseAnalysisInput(input: unknown): AnalysisInput {
   if (!input || typeof input !== "object") {
@@ -242,8 +323,8 @@ function parseAnalysisInput(input: unknown): AnalysisInput {
     throw new Error("Analysis userEdits must be an array.");
   }
 
-  if (body.userEdits.length > maxUserEdits) {
-    throw new Error(`Analysis supports at most ${maxUserEdits} drawing edits.`);
+  if (body.userEdits.length > maxAnalysisEdits) {
+    throw new Error(`Analysis supports at most ${maxAnalysisEdits.toLocaleString("en-US")} drawing edits.`);
   }
 
   let projectName: string | undefined;

@@ -5,13 +5,80 @@ import {
   emptyHistoryState,
   historyReducer
 } from "./drawing-history";
-import type { DrawingObject } from "./satellite-overlay";
+import type { DrawingObjectV1 } from "../shared/drawing-document";
 
-function signal(id: string): DrawingObject {
-  return { id, point: { lat: 28.61, lng: 77.21 }, type: "signal" };
+function signal(id: string): DrawingObjectV1 {
+  return {
+    geometry: { point: { lat: 28.61, lng: 77.21 }, type: "Point" },
+    id,
+    properties: { kind: "vehicle" },
+    type: "traffic-signal"
+  };
 }
 
 describe("historyReducer", () => {
+  it("updates an object's properties in place, keeping its identity and undo history", () => {
+    let state = historyReducer(emptyHistoryState, { object: signal("a"), type: "add" });
+
+    state = historyReducer(state, { id: "a", properties: { kind: "pedestrian" }, type: "update" });
+
+    expect(state.present).toHaveLength(1);
+    expect(state.present[0].id).toBe("a");
+    expect(state.present[0].properties).toEqual({ kind: "pedestrian" });
+    expect(canUndo(state)).toBe(true);
+
+    state = historyReducer(state, { type: "undo" });
+    expect(state.present[0].properties).toEqual({ kind: "vehicle" });
+
+    state = historyReducer(state, { type: "redo" });
+    expect(state.present[0].properties).toEqual({ kind: "pedestrian" });
+  });
+
+  it("replaces geometry via update-object, keeping the id and undoing cleanly", () => {
+    const original = signal("a");
+    let state = historyReducer(emptyHistoryState, { object: original, type: "add" });
+
+    const moved: DrawingObjectV1 = {
+      geometry: { point: { lat: 28.7, lng: 77.3 }, type: "Point" },
+      id: "a",
+      properties: { kind: "vehicle" },
+      type: "traffic-signal"
+    };
+
+    state = historyReducer(state, { id: "a", object: moved, type: "update-object" });
+
+    expect(state.present[0].geometry).toEqual(moved.geometry);
+    expect(state.present[0].id).toBe("a");
+    expect(canUndo(state)).toBe(true);
+
+    state = historyReducer(state, { type: "undo" });
+    expect(state.present[0].geometry).toEqual(original.geometry);
+
+    state = historyReducer(state, { type: "redo" });
+    expect(state.present[0].geometry).toEqual(moved.geometry);
+  });
+
+  it("ignores whole-object updates for unknown ids without polluting history", () => {
+    const state = historyReducer(emptyHistoryState, {
+      id: "missing",
+      object: signal("other"),
+      type: "update-object"
+    });
+
+    expect(state.past).toHaveLength(0);
+    expect(state.present).toHaveLength(0);
+  });
+
+  it("ignores property updates for unknown ids without polluting history", () => {
+    const state = historyReducer(emptyHistoryState, {
+      id: "missing",
+      properties: { kind: "cycle" },
+      type: "update"
+    });
+
+    expect(state).toBe(emptyHistoryState);
+  });
+
   it("adds objects and clears the redo future", () => {
     let state = historyReducer(emptyHistoryState, { object: signal("a"), type: "add" });
     state = historyReducer(state, { object: signal("b"), type: "add" });
@@ -96,14 +163,47 @@ describe("historyReducer", () => {
     expect(canUndo(state)).toBe(false);
   });
 
-  it("bounds memory by capping stored snapshots", () => {
+  it("fully undoes and redoes a 500-edit drawing session", () => {
     let state = emptyHistoryState;
 
-    for (let index = 0; index < 80; index += 1) {
+    for (let index = 0; index < 500; index += 1) {
       state = historyReducer(state, { object: signal(`s${index}`), type: "add" });
     }
 
-    expect(state.past.length).toBeLessThanOrEqual(50);
-    expect(state.present).toHaveLength(80);
+    expect(state.present).toHaveLength(500);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "undo" });
+    }
+
+    expect(state.present).toEqual([]);
+    expect(canUndo(state)).toBe(false);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "redo" });
+    }
+
+    expect(state.present).toHaveLength(500);
+    expect(state.present.map((object) => object.id)).toEqual(
+      Array.from({ length: 500 }, (_, index) => `s${index}`)
+    );
+    expect(canRedo(state)).toBe(false);
+  });
+
+  it("caps retained snapshots at 500 and reports when older history was dropped", () => {
+    let state = emptyHistoryState;
+
+    for (let index = 0; index < 501; index += 1) {
+      state = historyReducer(state, { object: signal(`s${index}`), type: "add" });
+    }
+
+    expect(state.past).toHaveLength(500);
+    expect(state.historyTruncated).toBe(true);
+
+    for (let index = 0; index < 500; index += 1) {
+      state = historyReducer(state, { type: "undo" });
+    }
+
+    expect(state.present.map((object) => object.id)).toEqual(["s0"]);
   });
 });

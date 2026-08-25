@@ -30,7 +30,7 @@ type OsmFeature = {
 
 const overpassUrl = "https://overpass-api.de/api/interpreter";
 const maxAreaKm2 = 5;
-const requestTimeoutMs = 40_000;
+export const OSM_UPSTREAM_TIMEOUT_MS = 55_000;
 
 export async function fetchOsmData(bbox: unknown) {
   validateBoundingBox(bbox);
@@ -62,7 +62,7 @@ export async function fetchOsmData(bbox: unknown) {
 
 async function fetchWithTimeout(url: string, init: RequestInit) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+  const timeoutId = setTimeout(() => controller.abort(), OSM_UPSTREAM_TIMEOUT_MS);
 
   try {
     return await fetch(url, { ...init, signal: controller.signal });
@@ -167,7 +167,7 @@ function parseOverpassResponse(data: OverpassResponse, bbox: BoundingBox) {
   };
 }
 
-function validateBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
+export function validateBoundingBox(bbox: unknown): asserts bbox is BoundingBox {
   if (!isBoundingBox(bbox)) {
     throw new Error("Request body must include bbox with north, south, east, and west numbers.");
   }
