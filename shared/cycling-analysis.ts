@@ -40,8 +40,6 @@ export type CyclingFeedbackIssue = {
 export type CyclingAnalysisOptions = {
   /** Two cycleway ends closer than this count as connected. */
   connectionToleranceMetres?: number;
-  /** A free-hanging cycleway end farther than this from anything flags. */
-  terminationToleranceMetres?: number;
   /** Distance within which a crossing counts as serving a junction/approach. */
   transitionToleranceMetres?: number;
 };
@@ -58,7 +56,6 @@ export const CYCLING_HEURISTIC_DISCLAIMER =
   "Heuristic cycling and road-design feedback based on drawn geometry and declared properties only. Not an engineering certification of safety or standards compliance.";
 
 const DEFAULT_CONNECTION_TOLERANCE_METRES = 5;
-const DEFAULT_TERMINATION_TOLERANCE_METRES = 20;
 const DEFAULT_TRANSITION_TOLERANCE_METRES = 25;
 
 /** Two-way cycle lanes below this width are uncomfortable for opposing flows. */
@@ -212,8 +209,6 @@ export function analyzeCyclingDesign(
 ): CyclingAnalysisResult {
   const connectionTolerance =
     options.connectionToleranceMetres ?? DEFAULT_CONNECTION_TOLERANCE_METRES;
-  const terminationTolerance =
-    options.terminationToleranceMetres ?? DEFAULT_TERMINATION_TOLERANCE_METRES;
   const transitionTolerance =
     options.transitionToleranceMetres ?? DEFAULT_TRANSITION_TOLERANCE_METRES;
 
