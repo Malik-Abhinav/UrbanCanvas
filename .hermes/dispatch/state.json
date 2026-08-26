@@ -11,13 +11,7 @@
     "06-dependency-security",
     "07-canvas-integration"
   ],
-  "queue": [
-    {
-      "id": "32-visual-regression",
-      "plan_task": 32,
-      "title": "Add visual regression coverage"
-    }
-  ],
+  "queue": [],
   "done": [
     "14-scale-aware-styling",
     "15-layer-semantics",
@@ -36,9 +30,10 @@
     "28-responsive-modes",
     "29-ui-states",
     "30-render-layers",
-    "31-accessibility"
+    "31-accessibility",
+    "32-visual-regression"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T14:05:00+05:30"
+  "updated_at": "2026-08-26T14:20:00+05:30"
 }
