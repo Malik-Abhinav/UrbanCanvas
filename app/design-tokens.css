@@ -1,45 +1,52 @@
 /*
- * UrbanCanvas production design tokens (Task 26).
+ * UrbanCanvas production design tokens (Task 26; ThreeUI direction applied).
  *
  * Single source of truth for visual primitives. Semantic custom properties
  * only — component classes and UI primitives consume these; they never hard-
- * code raw values. Values mirror the stabilized dark workbench palette.
+ * code raw values. Palette follows .hermes/design/threeui-workbench.html:
+ * darker green-tinted surfaces, hairline separation, flat light fills.
  */
 
 :root {
   /* ---- Color: surfaces ------------------------------------------------ */
-  --uc-color-page: #0b0f12;
-  --uc-color-surface: #071114;
-  --uc-color-panel: rgba(7, 17, 20, 0.78);
-  --uc-color-raised: rgba(255, 255, 255, 0.045);
-  --uc-color-overlay: rgba(255, 255, 255, 0.96);
+  --uc-color-page: #050706;
+  --uc-color-wall: #0b0e0c;
+  --uc-color-surface: #111612;
+  --uc-color-content: #171d18;
+  --uc-color-panel: rgba(11, 14, 12, 0.92);
+  --uc-color-raised: rgba(238, 244, 238, 0.055);
+  --uc-color-hover: rgba(238, 244, 238, 0.055);
 
-  /* ---- Color: borders -------------------------------------------------- */
-  --uc-color-border-subtle: rgba(255, 255, 255, 0.1);
-  --uc-color-border: rgba(255, 255, 255, 0.12);
-  --uc-color-border-strong: rgba(255, 255, 255, 0.18);
-  --uc-color-border-input: rgba(248, 250, 252, 0.18);
+  /* ---- Color: borders (hairlines) -------------------------------------- */
+  --uc-color-border-subtle: rgba(238, 244, 238, 0.09);
+  --uc-color-border: rgba(238, 244, 238, 0.13);
+  --uc-color-border-strong: rgba(238, 244, 238, 0.18);
+  --uc-color-border-input: rgba(238, 244, 238, 0.18);
 
   /* ---- Color: text ----------------------------------------------------- */
-  --uc-color-text: #f8fafc;
-  --uc-color-text-muted: rgba(248, 250, 252, 0.76);
-  --uc-color-text-faint: rgba(248, 250, 252, 0.45);
-  --uc-color-text-on-accent: #071114;
+  --uc-color-text: #eef4ee;
+  --uc-color-text-muted: #8c998f;
+  --uc-color-text-soft: #b7c2b8;
+  --uc-color-text-faint: rgba(238, 244, 238, 0.45);
+  --uc-color-text-on-fill: #0b100c;
 
   /* ---- Color: accents and state --------------------------------------- */
   --uc-color-accent: #63e6be;
   --uc-color-accent-soft: rgba(99, 230, 190, 0.1);
   --uc-color-accent-glow: rgba(99, 230, 190, 0.22);
+  --uc-color-fill: #e8efe8;
   --uc-color-warning: #f5c542;
   --uc-color-warning-soft: rgba(245, 197, 66, 0.12);
-  --uc-color-danger: #ff6b57;
-  --uc-color-danger-soft: rgba(255, 107, 87, 0.14);
+  --uc-color-danger: #ff7968;
+  --uc-color-danger-soft: rgba(255, 121, 104, 0.14);
+  --uc-color-info: #78aef8;
   --uc-color-success: #63e6be;
   --uc-color-success-soft: rgba(99, 230, 190, 0.14);
-  --uc-color-disabled-bg: rgba(255, 255, 255, 0.04);
+  --uc-color-disabled-bg: rgba(238, 244, 238, 0.04);
 
   /* ---- Typography ------------------------------------------------------ */
-  --uc-font-family: Arial, Helvetica, sans-serif;
+  --uc-font-family: "Avenir Next", "Segoe UI", Arial, sans-serif;
+  --uc-font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --uc-font-size-2xs: 0.6875rem; /* 11px — labels, meta */
   --uc-font-size-xs: 0.75rem; /* 12px — captions, chips */
   --uc-font-size-sm: 0.875rem; /* 14px — body, controls */
@@ -57,17 +64,17 @@
   --uc-space-5: 1.25rem;
   --uc-space-6: 1.5rem;
 
-  /* ---- Radii ------------------------------------------------------------ */
-  --uc-radius-sm: 6px;
-  --uc-radius-md: 10px;
-  --uc-radius-lg: 12px;
-  --uc-radius-xl: 14px;
+  /* ---- Radii (ThreeUI tight radii) -------------------------------------- */
+  --uc-radius-sm: 3px;
+  --uc-radius-md: 5px;
+  --uc-radius-lg: 8px;
+  --uc-radius-xl: 10px;
   --uc-radius-pill: 999px;
 
   /* ---- Elevation --------------------------------------------------------- */
-  --uc-shadow-1: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --uc-shadow-1: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   --uc-shadow-2: 0 8px 22px rgba(0, 0, 0, 0.35);
-  --uc-shadow-3: 0 16px 38px var(--uc-color-accent-glow);
+  --uc-shadow-3: 0 10px 26px rgba(99, 230, 190, 0.16);
   --uc-focus-ring: 0 0 0 3px var(--uc-color-accent-glow);
   --uc-focus-outline: 2px solid var(--uc-color-accent);
 

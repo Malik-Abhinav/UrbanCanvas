@@ -60,14 +60,14 @@ export default function DrawingToolbar({
 
   return (
     <>
-      <div className="absolute left-3 top-3 z-10 flex flex-col gap-2 rounded border border-white/20 bg-[#101311]/85 p-2 shadow-xl backdrop-blur max-sm:bottom-3 max-sm:left-1/2 max-sm:top-auto max-sm:-translate-x-1/2 max-sm:flex-row">
+      <div className="absolute left-3 top-3 z-10 flex flex-col gap-2 rounded border border-white/20 bg-[#111612]/85 p-2 shadow-xl backdrop-blur max-sm:bottom-3 max-sm:left-1/2 max-sm:top-auto max-sm:-translate-x-1/2 max-sm:flex-row">
         {drawingTools.map(({ Icon, id, label }) => (
           <button
             aria-label={label}
             aria-pressed={activeTool === id}
             className={`flex h-11 w-11 items-center justify-center rounded border transition ${
               activeTool === id
-                ? "border-[#f5c542] bg-[#f5c542] text-[#101311]"
+                ? "border-[#f5c542] bg-[#f5c542] text-[#111612]"
                 : "border-white/15 bg-white/10 text-white hover:border-[#f5c542]/70"
             }`}
             key={id}
@@ -114,7 +114,7 @@ export default function DrawingToolbar({
       </div>
 
       {hoveredTool ? (
-        <div className="absolute left-[4.75rem] top-3 z-20 hidden rounded border border-white/20 bg-[#101311]/95 px-3 py-2 text-sm font-medium text-white shadow-xl sm:block">
+        <div className="absolute left-[4.75rem] top-3 z-20 hidden rounded border border-white/20 bg-[#111612]/95 px-3 py-2 text-sm font-medium text-white shadow-xl sm:block">
           {getToolLabel(hoveredTool)}
         </div>
       ) : null}

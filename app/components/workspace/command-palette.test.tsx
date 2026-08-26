@@ -28,7 +28,7 @@ describe("CommandPalette", () => {
     expect(markup).toContain("Draw road");
     expect(markup).toContain("Toggle grid");
     // Graphite surface with the #f5c542 accent family.
-    expect(markup).toContain("#101311");
+    expect(markup).toContain("#111612");
     expect(markup).toContain("#f5c542");
   });
 

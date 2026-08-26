@@ -24,7 +24,7 @@ export function SaveStatusIndicator({ onRetry, status }: SaveStatusIndicatorProp
   if (status === "failed") {
     return (
       <p
-        className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-xs leading-5 text-[#ffd1ca]"
+        className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-[#ff7968]/30 bg-[#ff7968]/10 px-3 py-2 text-xs leading-5 text-[#ffd1ca]"
         role="alert"
       >
         <span>Autosave failed — latest changes are not saved.</span>

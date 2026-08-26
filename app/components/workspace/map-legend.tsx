@@ -58,7 +58,7 @@ const ENTRIES: LegendEntry[] = [
   },
   {
     label: "Traffic signal — marked dot",
-    sample: <span aria-hidden="true" className="inline-block h-3 w-3 rounded-full bg-[#60a5fa]" />
+    sample: <span aria-hidden="true" className="inline-block h-3 w-3 rounded-full bg-[#78aef8]" />
   }
 ];
 
@@ -70,10 +70,10 @@ export function MapLegend({ defaultOpen = false }: { defaultOpen?: boolean }) {
       {isOpen ? (
         <div
           aria-label="Map legend"
-          className="mb-2 w-64 rounded-lg border border-white/15 bg-[#161a18]/95 p-3 shadow-xl"
+          className="mb-2 w-64 rounded-lg border border-white/15 bg-[#111612]/95 p-3 shadow-xl"
           role="group"
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-white/45">Proposal types</p>
+          <p className="uc-meta-label">Proposal types</p>
           <ul className="mt-2 space-y-2">
             {ENTRIES.map((entry) => (
               <li className="flex items-center gap-2.5 text-xs leading-5 text-white/75" key={entry.label}>

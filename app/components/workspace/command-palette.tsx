@@ -43,7 +43,7 @@ export default function CommandPalette({ commands, onClose, onRun, open }: Comma
   return (
     <div
       aria-label="Command palette"
-      className="absolute left-1/2 top-14 z-40 w-80 -translate-x-1/2 rounded border border-white/20 bg-[#101311]/95 shadow-2xl backdrop-blur"
+      className="absolute left-1/2 top-14 z-40 w-80 -translate-x-1/2 rounded border border-white/20 bg-[#111612]/95 shadow-2xl backdrop-blur"
       role="dialog"
     >
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">

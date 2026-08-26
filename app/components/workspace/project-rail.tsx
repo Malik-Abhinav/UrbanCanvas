@@ -222,7 +222,7 @@ export default function ProjectRail({
       <SearchErrorBanner message={searchError} />
 
       <section className="mt-6">
-        <p className="text-xs font-semibold uppercase text-white/45">Focused place</p>
+        <p className="uc-meta-label">Focused place</p>
         <p className="mt-2 text-sm leading-6 text-white/80">{selectedPlace}</p>
       </section>
 
@@ -259,7 +259,7 @@ export default function ProjectRail({
 
         {selectedBounds ? (
           <div className="info-panel mt-4 p-3">
-            <p className="text-xs font-semibold uppercase text-white/45">Selected bounds</p>
+            <p className="uc-meta-label">Selected bounds</p>
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
               <Coordinate label="North" value={selectedBounds.north} />
               <Coordinate label="South" value={selectedBounds.south} />
@@ -292,7 +292,7 @@ export default function ProjectRail({
 
         {osmData ? (
           <div className="info-panel mt-4 p-3">
-            <p className="text-xs font-semibold uppercase text-white/45">OSM data stored</p>
+            <p className="uc-meta-label">OSM data stored</p>
             <div className="mt-3 grid grid-cols-3 gap-2">
               <Count label="Buildings" value={osmData.counts.buildings} />
               <Count label="Roads" value={osmData.counts.roads} />
@@ -304,7 +304,7 @@ export default function ProjectRail({
 
       <section className="mt-6 border-t border-white/10 pt-5">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-semibold uppercase text-white/45">Projects</p>
+          <p className="uc-meta-label">Projects</p>
           <button
             className="secondary-button px-2.5 py-1 text-xs"
             disabled={isLoadingProjects}
@@ -387,7 +387,7 @@ export default function ProjectRail({
                 </button>
                 <button
                   aria-label={`Delete project ${project.name}`}
-                  className="icon-button shrink-0 hover:border-[#ff6b57]/60 hover:text-[#ffd1ca]"
+                  className="icon-button shrink-0 hover:border-[#ff7968]/60 hover:text-[#ffd1ca]"
                   disabled={deletingProjectId !== null}
                   onClick={() => onDeleteProject(project.id)}
                   title="Delete project"
@@ -407,7 +407,7 @@ export default function ProjectRail({
 
       <section className="mt-6 border-t border-white/10 pt-5">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-xs font-semibold uppercase text-white/45">Change analysis</p>
+          <p className="uc-meta-label">Change analysis</p>
           <span className="rounded-md border border-[#63e6be]/20 bg-[#63e6be]/10 px-2 py-1 text-[11px] text-[#9ff5da]">
             Rules
           </span>
@@ -448,7 +448,7 @@ export default function ProjectRail({
 
       {results.length > 0 ? (
         <section className="mt-6">
-          <p className="text-xs font-semibold uppercase text-white/45">Results</p>
+          <p className="uc-meta-label">Results</p>
           <div className="mt-3 space-y-2">
             {results.map((result) => (
               <button
@@ -504,7 +504,7 @@ function SidebarSkeleton() {
 function AnalysisList({ items, title }: { items: string[]; title: string }) {
   return (
     <div>
-      <p className="text-xs font-semibold uppercase text-white/45">{title}</p>
+      <p className="uc-meta-label">{title}</p>
       <ul className="mt-2 space-y-1.5 text-sm leading-5 text-white/70">
         {items.map((item) => (
           <li className="border-l border-[#f5c542]/40 pl-2" key={item}>

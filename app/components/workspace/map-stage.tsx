@@ -91,7 +91,7 @@ export default function MapStage({
   return (
     <section
       aria-label="Map canvas"
-      className="relative h-[100dvh] min-h-[62vh] overflow-hidden bg-[#071114] lg:h-auto lg:min-h-screen"
+      className="relative h-[100dvh] min-h-[62vh] overflow-hidden bg-[#050706] lg:h-auto lg:min-h-screen"
       id="map-canvas"
     >
       <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
@@ -99,14 +99,14 @@ export default function MapStage({
       <MapLegend />
       {!isMapLoaded && !mapError ? (
         <div className="pointer-events-none absolute left-4 top-4 z-10">
-          <div aria-live="polite" className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
+          <div aria-live="polite" className="rounded border border-white/15 bg-[#111612]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
             Loading satellite map...
           </div>
         </div>
       ) : null}
       {mapError ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0d100f] p-6">
-          <div className="max-w-md rounded border border-[#ff6b57]/30 bg-[#161a18] p-5 shadow-2xl">
+        <div className="absolute inset-0 flex items-center justify-center bg-[#050706] p-6">
+          <div className="max-w-md rounded border border-[#ff7968]/30 bg-[#111612] p-5 shadow-2xl">
             <h2 role="alert" className="text-lg font-semibold text-[#ffd1ca]">Map failed to load</h2>
             <p className="mt-3 text-sm leading-6 text-white/70">{mapError}</p>
           </div>
@@ -167,7 +167,7 @@ export default function MapStage({
       ) : null}
 
       {isAreaConfirmed ? (
-        <div className="absolute right-4 top-4 rounded border border-white/15 bg-[#161a18]/90 px-3 py-2 text-sm text-white/75 shadow-xl">
+        <div className="absolute right-4 top-4 rounded border border-white/15 bg-[#111612]/90 px-3 py-2 text-sm text-white/75 shadow-xl">
           Satellite base frozen. Canvas overlay ready.
           {isFetchingOsm ? <span className="ml-2 text-[#f5c542]">Fetching OSM...</span> : null}
         </div>
@@ -175,7 +175,7 @@ export default function MapStage({
 
       {showTokenNotice ? (
         <div className="absolute inset-0 flex items-center justify-center p-6">
-          <div className="max-w-md rounded border border-white/15 bg-[#161a18] p-5 shadow-2xl">
+          <div className="max-w-md rounded border border-white/15 bg-[#111612] p-5 shadow-2xl">
             <h2 className="text-xl font-semibold">Mapbox token needed</h2>
             <p className="mt-3 text-sm leading-6 text-white/70">
               Add your public Mapbox token to `.env` as `NEXT_PUBLIC_MAPBOX_TOKEN`,

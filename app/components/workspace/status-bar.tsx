@@ -31,7 +31,7 @@ export function OfflineBanner() {
 
   return (
     <div
-      className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded border border-[#f5c542]/40 bg-[#161a18]/95 px-4 py-2 text-sm leading-6 text-[#ffe6a1] shadow-xl"
+      className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded border border-[#f5c542]/40 bg-[#111612]/95 px-4 py-2 text-sm leading-6 text-[#ffe6a1] shadow-xl"
       role="alert"
     >
       You are offline — saves and map data will fail until the connection returns.
@@ -80,7 +80,7 @@ export function OsmErrorBanner({ canRetry, isFetchingOsm, message, onRetry, retr
   }
 
   return (
-    <div className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
+    <div className="mt-3 rounded border border-[#ff7968]/30 bg-[#ff7968]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
       <p>{message}</p>
       {canRetry ? (
         <button
@@ -120,7 +120,7 @@ export function ProjectDeleteErrorBanner({ message }: MessageBannerProps) {
   }
 
   return (
-    <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
+    <p className="mt-3 rounded border border-[#ff7968]/30 bg-[#ff7968]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
       {message}
     </p>
   );
@@ -133,7 +133,7 @@ export function AnalysisMessageBanner({ message }: MessageBannerProps) {
   }
 
   return (
-    <p className="mt-3 rounded border border-[#ff6b57]/30 bg-[#ff6b57]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
+    <p className="mt-3 rounded border border-[#ff7968]/30 bg-[#ff7968]/10 px-3 py-2 text-sm leading-6 text-[#ffd1ca]" role="alert">
       {message}
     </p>
   );

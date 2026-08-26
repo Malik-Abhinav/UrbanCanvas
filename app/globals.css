@@ -45,10 +45,10 @@ body {
 
 .primary-button {
   align-items: center;
-  background: linear-gradient(135deg, var(--uc-color-accent) 0%, var(--uc-color-warning) 100%);
-  border: 1px solid var(--uc-color-border);
+  background: var(--uc-color-fill);
+  border: 1px solid var(--uc-color-border-strong);
   border-radius: var(--uc-radius-md);
-  color: var(--uc-color-text-on-accent);
+  color: var(--uc-color-text-on-fill);
   display: inline-flex;
   font-weight: var(--uc-font-weight-bold);
   justify-content: center;
@@ -61,6 +61,7 @@ body {
 }
 
 .primary-button:hover:not(:disabled) {
+  background: #f2f7f2;
   box-shadow: var(--uc-shadow-3);
   transform: translateY(-1px);
 }
@@ -82,12 +83,12 @@ body {
 .secondary-button,
 .icon-button {
   align-items: center;
-  background: var(--uc-color-raised);
+  background: var(--uc-color-surface);
   border: 1px solid var(--uc-color-border-strong);
   border-radius: var(--uc-radius-md);
-  color: var(--uc-color-text-muted);
+  color: var(--uc-color-text-soft);
   display: inline-flex;
-  font-weight: var(--uc-font-weight-bold);
+  font-weight: var(--uc-font-weight-medium);
   justify-content: center;
   line-height: 1.25;
   transition:
@@ -99,8 +100,8 @@ body {
 
 .secondary-button:hover:not(:disabled),
 .icon-button:hover {
-  background: var(--uc-color-accent-soft);
-  border-color: rgba(99, 230, 190, 0.46);
+  background: var(--uc-color-hover);
+  border-color: rgba(238, 244, 238, 0.32);
   color: var(--uc-color-text);
 }
 
@@ -110,16 +111,20 @@ body {
 }
 
 .field-input {
-  background: var(--uc-color-overlay);
+  background: var(--uc-color-content);
   border: 1px solid var(--uc-color-border-input);
   border-radius: var(--uc-radius-md);
-  color: var(--uc-color-text-on-accent);
+  color: var(--uc-color-text);
   font-size: var(--uc-font-size-sm);
   outline: none;
   padding: 0.625rem var(--uc-space-3);
   transition:
     border-color var(--uc-motion-base) var(--uc-ease-standard),
     box-shadow var(--uc-motion-base) var(--uc-ease-standard);
+}
+
+.field-input::placeholder {
+  color: var(--uc-color-text-muted);
 }
 
 .field-input:focus {
@@ -136,12 +141,19 @@ body {
 }
 
 .info-panel {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.025)),
-    var(--uc-color-panel);
+  background: var(--uc-color-wall);
   border: 1px solid var(--uc-color-border-subtle);
   border-radius: var(--uc-radius-lg);
   box-shadow: var(--uc-shadow-1);
+}
+
+/* ThreeUI micro-label: mono uppercase meta text. */
+.uc-meta-label {
+  color: var(--uc-color-text-muted);
+  font-family: var(--uc-font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 /* ---- UI primitives (Task 26) -------------------------------------------- */

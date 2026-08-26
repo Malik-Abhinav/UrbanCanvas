@@ -78,9 +78,9 @@ export default function WorkspaceShell({ isSidebarCollapsed, mapStage, onToggleS
   const isPanelHidden = !isDrawerOpen && !isDesktop;
 
   return (
-    <main className="relative min-h-screen bg-[#0b0f12] text-[#f8fafc]">
+    <main className="relative min-h-screen bg-[#050706] text-[#f8fafc]">
       <a
-        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:border focus:border-[#63e6be] focus:bg-[#101820] focus:px-3 focus:py-2 focus:text-sm"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:border focus:border-[#63e6be] focus:bg-[#0b0e0c] focus:px-3 focus:py-2 focus:text-sm"
         href="#map-canvas"
       >
         Skip to map canvas
@@ -110,7 +110,7 @@ export default function WorkspaceShell({ isSidebarCollapsed, mapStage, onToggleS
         <aside
           aria-hidden={isPanelHidden || undefined}
           aria-label="Map workspace controls"
-          className={`uc-drawer border-white/10 bg-[#101820]/95 shadow-2xl backdrop-blur ${
+          className={`uc-drawer border-white/10 bg-[#0b0e0c]/95 shadow-2xl backdrop-blur ${
             isSidebarCollapsed ? "px-3 py-4" : "px-5 py-5"
           } ${isDrawerOpen ? "uc-drawer-open" : ""} ${isSidebarCollapsed ? "" : "max-lg:border-t"} z-40`}
           id="workspace-panel"

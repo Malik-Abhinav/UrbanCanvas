@@ -11,7 +11,7 @@ import type { AnalysisFinding, AnalysisFindingSeverity } from "../../../shared/a
  */
 
 const SEVERITY_STYLES: Record<AnalysisFindingSeverity, string> = {
-  critical: "border-[#ff6b57]/40 bg-[#ff6b57]/15 text-[#ffd1ca]",
+  critical: "border-[#ff7968]/40 bg-[#ff7968]/15 text-[#ffd1ca]",
   info: "border-white/20 bg-white/[0.06] text-white/70",
   warning: "border-[#f5c542]/40 bg-[#f5c542]/10 text-[#ffe6a1]"
 };
