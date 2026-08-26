@@ -28,7 +28,9 @@ test.beforeEach(async ({ page }) => {
 
 async function releaseMap(page: import("@playwright/test").Page) {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Map workspace" })).toBeVisible();
+  // The workspace heading lives inside the control panel, which starts closed
+  // below 1024px — wait on the map region instead so this works at every width.
+  await expect(page.getByRole("region", { name: "Map canvas" })).toBeVisible();
   await page.evaluate(() => window.__releaseUrbanCanvasE2eMap?.());
   await expect(page.getByText("Loading satellite map...")).toBeHidden();
 }
