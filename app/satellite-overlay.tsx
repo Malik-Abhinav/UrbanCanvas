@@ -1474,6 +1474,10 @@ export default function SatelliteOverlay({
           ))
             : null}
 
+        </Layer>
+        {/* Task 30: static OSM context on its own non-listening layer so road
+            re-renders never re-run hit-testing for interactive shapes. */}
+        <Layer listening={false}>
           {layerSettings.visible.osmRoads
             ? projectedRoads.map((road) => {
               const style = contextRoadStyles.get(road.id);
@@ -1495,7 +1499,10 @@ export default function SatelliteOverlay({
               );
             })
             : null}
-
+        </Layer>
+        {/* Task 30: analysis visuals isolated so rule findings repaint without
+            touching the proposal hit-graph. */}
+        <Layer listening={false}>
           {layerSettings.visible.analysis && renderedDeadEndEdges.map((edge) => (
             <Line
               key={edge.id}
@@ -1531,7 +1538,9 @@ export default function SatelliteOverlay({
               y={renderedPathStart.y}
             />
           ) : null}
-
+        </Layer>
+        {/* Task 30: interactive proposal layer — the only hit-testing canvas. */}
+        <Layer>
           <Group opacity={layerSettings.visible.proposal ? effectiveProposalOpacity : 0}>
             {renderedObjects.map((object) => (
               <StyledDrawingObject
@@ -2186,7 +2195,8 @@ function formatDistance(distanceMeters: number) {
   return `${Math.round(distanceMeters)} m`;
 }
 
-function getRenderedObject(
+/** Task 30 perf budget: exported for the render-perf regression test. */
+export function getRenderedObject(
   object: DrawingObjectV1,
   projectMapPoint: (point: MapPoint) => Point,
   converter: PixelMetreConverter
