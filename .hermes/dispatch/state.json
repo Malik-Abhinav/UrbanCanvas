@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "30-render-layers",
-      "plan_task": 30,
-      "title": "Profile and isolate render layers"
-    },
-    {
       "id": "31-accessibility",
       "plan_task": 31,
       "title": "Complete accessibility verification"
@@ -44,9 +39,10 @@
     "26-design-system",
     "27-decompose-workspace",
     "28-responsive-modes",
-    "29-ui-states"
+    "29-ui-states",
+    "30-render-layers"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T13:25:00+05:30"
+  "updated_at": "2026-08-26T13:45:00+05:30"
 }
