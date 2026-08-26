@@ -232,6 +232,69 @@ body {
   opacity: 1;
 }
 
+/* ---- Responsive workspace drawer / sheet (Task 28) ----------------------- */
+
+/*
+ * Below 1024px the control panel leaves the document flow: a left slide-over
+ * on tablet, a bottom sheet on mobile, summoned by a floating toggle over the
+ * map. At lg+ the panel is a static grid column exactly as before.
+ */
+
+.uc-drawer {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transition: transform var(--uc-motion-slow) var(--uc-ease-standard);
+}
+
+.uc-drawer-toggle {
+  min-height: var(--uc-target-min);
+  min-width: var(--uc-target-min);
+}
+
+@media (max-width: 639.98px) {
+  .uc-drawer {
+    border-top: 1px solid var(--uc-color-border);
+    border-radius: var(--uc-radius-xl) var(--uc-radius-xl) 0 0;
+    bottom: 0;
+    inset-inline: 0;
+    max-height: 72dvh;
+    position: fixed;
+    top: auto;
+    transform: translateY(100%);
+  }
+
+  .uc-drawer.uc-drawer-open {
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1023.98px) {
+  .uc-drawer {
+    border-right: 1px solid var(--uc-color-border);
+    bottom: 0;
+    left: 0;
+    position: fixed;
+    top: 0;
+    transform: translateX(-100%);
+    width: min(400px, 86vw);
+  }
+
+  .uc-drawer.uc-drawer-open {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 1023.98px) {
+  .uc-backdrop {
+    background: rgba(3, 7, 9, 0.55);
+    inset: 0;
+    position: fixed;
+    z-index: 30;
+  }
+}
+
 .vertical-brand {
   font-size: 0.78rem;
   font-weight: 800;

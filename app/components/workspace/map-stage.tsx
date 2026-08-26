@@ -89,7 +89,7 @@ export default function MapStage({
   return (
     <section
       aria-label="Map canvas"
-      className="relative min-h-[62vh] overflow-hidden bg-[#071114] lg:min-h-screen"
+      className="relative h-[100dvh] min-h-[62vh] overflow-hidden bg-[#071114] lg:h-auto lg:min-h-screen"
       id="map-canvas"
     >
       <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
