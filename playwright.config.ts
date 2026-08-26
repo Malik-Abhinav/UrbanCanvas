@@ -6,6 +6,8 @@ const port = getPlaywrightPort();
 export default defineConfig({
   testDir: "./e2e",
   fullyParallel: true,
+  // Task 32: reviewed baselines live in their own owner-gated directory.
+  snapshotPathTemplate: "{testDir}/visual-baselines/{arg}{ext}",
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["line"], ["html", { open: "never" }]] : "list",

@@ -15,3 +15,5 @@ playwright/.cache
 test-results
 .next-e2e-safety-backup-*
 PLAN.md
+
+e2e/visual-baselines/
