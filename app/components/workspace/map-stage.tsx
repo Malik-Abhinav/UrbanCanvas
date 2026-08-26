@@ -4,6 +4,7 @@ import type { ComponentProps, PointerEvent, RefObject } from "react";
 import type { DrawingObjectV1 } from "../../../shared/drawing-document";
 import type { LayerSettings } from "../../layer-semantics";
 import SatelliteOverlay from "../../satellite-overlay";
+import { MapLegend } from "./map-legend";
 import { OfflineBanner } from "./status-bar";
 
 export type SelectionBox = {
@@ -95,6 +96,7 @@ export default function MapStage({
     >
       <div ref={mapContainerRef} className="mapbox-panel absolute inset-0" />
       <OfflineBanner />
+      <MapLegend />
       {!isMapLoaded && !mapError ? (
         <div className="pointer-events-none absolute left-4 top-4 z-10">
           <div aria-live="polite" className="rounded border border-white/15 bg-[#161a18]/90 px-4 py-3 text-sm text-white/70 shadow-2xl">
