@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "28-responsive-modes",
-      "plan_task": 28,
-      "title": "Implement responsive workspace modes"
-    },
-    {
       "id": "29-ui-states",
       "plan_task": 29,
       "title": "Add disciplined loading, empty, error, and success states"
@@ -52,9 +47,10 @@
     "24-explainable-analysis",
     "25-workspace-prototypes",
     "26-design-system",
-    "27-decompose-workspace"
+    "27-decompose-workspace",
+    "28-responsive-modes"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T02:05:00+05:30"
+  "updated_at": "2026-08-26T02:35:00+05:30"
 }
