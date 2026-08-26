@@ -13,11 +13,6 @@
   ],
   "queue": [
     {
-      "id": "29-ui-states",
-      "plan_task": 29,
-      "title": "Add disciplined loading, empty, error, and success states"
-    },
-    {
       "id": "30-render-layers",
       "plan_task": 30,
       "title": "Profile and isolate render layers"
@@ -48,9 +43,10 @@
     "25-workspace-prototypes",
     "26-design-system",
     "27-decompose-workspace",
-    "28-responsive-modes"
+    "28-responsive-modes",
+    "29-ui-states"
   ],
   "failed": [],
   "in_flight": null,
-  "updated_at": "2026-08-26T02:35:00+05:30"
+  "updated_at": "2026-08-26T13:25:00+05:30"
 }
