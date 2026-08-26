@@ -1,8 +1,43 @@
 "use client";
 
+"use client";
+
+import { useEffect, useState } from "react";
+
 type MessageBannerProps = {
   message: string | null;
 };
+
+/** Amber banner over the map while the browser reports no network connection. */
+export function OfflineBanner() {
+  const [isOffline, setIsOffline] = useState(false);
+
+  useEffect(() => {
+    const update = () => setIsOffline(!navigator.onLine);
+
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+
+  if (!isOffline) {
+    return null;
+  }
+
+  return (
+    <div
+      className="absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded border border-[#f5c542]/40 bg-[#161a18]/95 px-4 py-2 text-sm leading-6 text-[#ffe6a1] shadow-xl"
+      role="alert"
+    >
+      You are offline — saves and map data will fail until the connection returns.
+    </div>
+  );
+}
 
 /** Yellow warning banner shown under the location search form. */
 export function SearchErrorBanner({ message }: MessageBannerProps) {

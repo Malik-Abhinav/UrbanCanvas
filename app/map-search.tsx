@@ -30,8 +30,7 @@ import {
   toUserEditsPayload
 } from "./drawing-document-bridge";
 import type { DrawingObjectV1 } from "../shared/drawing-document";
-import type { AnalysisFinding } from "../shared/analysis-findings";
-import { AnalysisInspector } from "./components/workspace/analysis-inspector";
+import type { SaveStatus } from "./components/workspace/save-status";
 import { useWorkspaceAuth } from "./workspace-auth";
 import WorkspaceShell from "./components/workspace/workspace-shell";
 
@@ -152,6 +151,10 @@ export default function MapSearch() {
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
   const [lastAutoSaveFailed, setLastAutoSaveFailed] = useState(false);
+  // Task 29: autosave lifecycle for the save-status indicator (idle/saving/saved;
+  // failures surface through lastAutoSaveFailed and derive the "failed" status).
+  const [autosavePhase, setAutosavePhase] = useState<SaveStatus>("idle");
+  const saveStatus: SaveStatus = lastAutoSaveFailed ? "failed" : isSavingProject ? "saving" : autosavePhase;
 
   const handleObjectsChange = useCallback((objects: DrawingObjectV1[]) => {
     setProjectObjects(objects);
@@ -661,7 +664,9 @@ export default function MapSearch() {
       return;
     }
 
-    if (!silent) {
+    if (silent) {
+      setAutosavePhase("saving");
+    } else {
       setIsSavingProject(true);
       setProjectMessage(null);
     }
@@ -698,6 +703,7 @@ export default function MapSearch() {
 
       if (silent) {
         setLastAutoSaveFailed(false);
+        setAutosavePhase("saved");
         setProjectMessage(`Auto-saved ${formatProjectDate(new Date().toISOString())}.`);
       } else {
         setProjectMessage("Project saved.");
@@ -863,7 +869,13 @@ export default function MapSearch() {
           : "Project loaded."
       );
     } catch (loadError) {
-      setProjectMessage(loadError instanceof Error ? loadError.message : "Unable to load project.");
+      const message = loadError instanceof Error ? loadError.message : "Unable to load project.";
+      // Corrupted-item recovery (Task 29): tell the user the escape hatch.
+      setProjectMessage(
+        /corrupt|incomplete/i.test(message)
+          ? `${message} Delete this project from the list to remove it, then start a fresh project — your other projects are unaffected.`
+          : message
+      );
     }
   }
 
@@ -1066,6 +1078,7 @@ export default function MapSearch() {
         isSelectingArea={isSelectingArea}
         isSignedIn={isSignedIn}
         lastAutoSaveFailed={lastAutoSaveFailed}
+        saveStatus={saveStatus}
         layerSettings={layerSettings}
         onAnalyzeChanges={() => void analyzeCurrentChanges()}
         onClearSelection={clearSelection}

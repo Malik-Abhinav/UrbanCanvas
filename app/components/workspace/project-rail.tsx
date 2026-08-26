@@ -12,6 +12,8 @@ import {
   type LayerSettings
 } from "../../layer-semantics";
 import { AnalysisInspector } from "./analysis-inspector";
+import { SaveStatusIndicator } from "./save-status";
+import type { SaveStatus } from "./save-status";
 import ContextInspector from "./context-inspector";
 import LayersPanel from "./layers-panel";
 import {
@@ -100,6 +102,7 @@ type ProjectRailProps = {
   isSignedIn: boolean;
   isSavingProject: boolean;
   lastAutoSaveFailed: boolean;
+  saveStatus: SaveStatus;
   onSaveProject: () => void;
   onLoadProject: (id: string) => void;
   deletingProjectId: string | null;
@@ -137,6 +140,7 @@ export default function ProjectRail({
   isSelectingArea,
   isSignedIn,
   lastAutoSaveFailed,
+  saveStatus,
   layerSettings,
   analysisMessage,
   onAnalyzeChanges,
@@ -348,6 +352,8 @@ export default function ProjectRail({
               : "Auto-saves 2 minutes after the latest saved-area change."
             : "Sign in to save and reload projects."}
         </p>
+
+        <SaveStatusIndicator onRetry={onSaveProject} status={saveStatus} />
 
         <ProjectMessageBanner message={projectMessage} />
 
